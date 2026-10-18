@@ -38,6 +38,18 @@ import Observation
 @MainActor
 final class WindowShieldManager {
 
+    /// One window of the target app as reported by the window server, in **Cocoa**
+    /// global coordinates.
+    ///
+    /// Unlike the tracker's AX data this survives `hide()` — measured on this machine:
+    /// hiding an app keeps every window and its bounds, only `isOnscreen` flips to
+    /// false. That is what makes it usable as the geometry source while the app is
+    /// hidden and AX has nothing to say.
+    struct OwnedWindow {
+        let frame: CGRect
+        let isOnScreen: Bool
+    }
+
     /// What is actually in force — which can differ from what was requested, since
     /// the manager may fall back on its own.
     enum ActiveMode: Equatable {
@@ -72,6 +84,10 @@ final class WindowShieldManager {
     /// Full-screen stopgap used between "a locked app came forward" and "the
     /// per-window covers are up". See `imposeEmergencyCover`.
     @ObservationIgnored private var emergencyCover: WindowShieldPanel?
+    /// Covers built from a window-server snapshot while the app is hidden and AX has
+    /// nothing to report. Replaced by the real (AX-driven) panels as soon as those
+    /// exist — see `adoptCachedWindows`.
+    @ObservationIgnored private var cachedPanels: [WindowShieldPanel] = []
     /// When the current stopgap was ordered front — see
     /// `dismissEmergencyCoverWhenReady`.
     @ObservationIgnored private var emergencyCoverShownAt: Date?
@@ -85,7 +101,7 @@ final class WindowShieldManager {
     var isShielding: Bool { activeMode != .none }
 
     /// How many windows are currently covered — diagnostics only.
-    var shieldedWindowCount: Int { panels.count }
+    var shieldedWindowCount: Int { panels.count + cachedPanels.count }
 
     // MARK: - User preference
 
@@ -104,8 +120,21 @@ final class WindowShieldManager {
     ///
     /// `async` because of the settle wait below — the caller must not hide the app
     /// first, or there would be no windows left to find (see `settleForWindows`).
+    ///
+    /// - Parameter cachedWindows: a window-server snapshot taken **before** the app
+    ///   was hidden. The challenge hides the app synchronously (see
+    ///   `AppUnlockCoordinator.beginChallenge`), and an app's AX tree reports nothing
+    ///   while it is hidden — without this snapshot every challenge would fall back to
+    ///   hiding for the whole settle wait. With it the covers go up immediately and the
+    ///   app can be brought straight back, painting underneath them.
     @discardableResult
-    func shield(pid: pid_t, bundleID: String, appName: String, icon: NSImage?) async -> ActiveMode {
+    func shield(
+        pid: pid_t,
+        bundleID: String,
+        appName: String,
+        icon: NSImage?,
+        cachedWindows: [OwnedWindow] = []
+    ) async -> ActiveMode {
         // `teardownPanels`, not `unshield`: an emergency cover put up by
         // `imposeEmergencyCover` must survive until the real covers replace it,
         // otherwise the app's window is exposed again for the whole settle wait.
@@ -132,6 +161,19 @@ final class WindowShieldManager {
         }
 
         let windows = await settleForWindows()
+
+        // The app is hidden right now, so AX is expected to come back empty for a
+        // while. The snapshot taken before the hide still has the geometry, and it is
+        // exactly where the covers belong — use it rather than degrading to "the app
+        // vanished" for the whole settle wait. The AX-driven panels take over as soon
+        // as the app is back (see `handleTrackerChange` → `syncPanels`).
+        if windows.isEmpty,
+           !cachedWindows.isEmpty,
+           !cachedWindows.contains(where: { WindowTracker.coversWholeScreen($0.frame, screens: NSScreen.screens.map(\.frame)) }) {
+            adoptCachedWindows(cachedWindows, target: target)
+            return .windowShield
+        }
+
         guard !windows.isEmpty else {
             return switchToHidden(reason: "没有可覆盖的窗口")
         }
@@ -158,6 +200,8 @@ final class WindowShieldManager {
             panel.close()
         }
         panels.removeAll()
+
+        dismissCachedPanels()
 
         tracker.stop()
         stopObservingSpaceChanges()
@@ -223,9 +267,14 @@ final class WindowShieldManager {
         emergencyCoverDeadline = Date().addingTimeInterval(FIDConstants.emergencyCoverMaxWait)
     }
 
-    private struct OwnedWindow {
-        let frame: CGRect
-        let isOnScreen: Bool
+    /// The pid's windows that are on screen right now, in Cocoa coordinates.
+    ///
+    /// Read by the coordinator **before** it hides the app: `hide()` makes AX report
+    /// nothing, and the covers have to have somewhere to go the instant the challenge
+    /// starts. Window *bounds* need no Screen Recording grant (only names do), so this
+    /// is free.
+    func onScreenWindows(for pid: pid_t) -> [OwnedWindow] {
+        Self.windowInfo(for: pid).filter(\.isOnScreen)
     }
 
     /// Whether the process has any window at all — on screen or not.
@@ -347,7 +396,10 @@ final class WindowShieldManager {
             switchToHidden(reason: "应用切换到了全屏")
             return
         }
-        guard !windows.isEmpty else {
+        // An empty read right after the app came back is the AX tree still catching up,
+        // not the app losing its windows — while snapshot covers are carrying the
+        // shield, one empty poll must not abandon it (and hide the app again).
+        guard !windows.isEmpty || !cachedPanels.isEmpty else {
             switchToHidden(reason: "应用没有可覆盖的窗口")
             return
         }
@@ -356,6 +408,9 @@ final class WindowShieldManager {
 
     private func syncPanels(with windows: [TrackedWindow]) {
         guard let target else { return }
+        // AX is reporting again (the app is back on screen): the snapshot covers have
+        // done their job. Same rectangles, so swapping them here is invisible.
+        dismissCachedPanels()
         let live = Set(windows.map(\.key))
 
         for key in panels.keys where !live.contains(key) {
@@ -383,6 +438,49 @@ final class WindowShieldManager {
         dismissEmergencyCoverWhenReady()
     }
 
+    // MARK: - Snapshot covers
+
+    /// Builds covers from a window-server snapshot, for the window between "the app
+    /// was hidden" and "AX can see its windows again".
+    ///
+    /// Without this, hiding the app (which is what removes the visible-content gap)
+    /// also removes the only geometry source the covers had, and every challenge
+    /// degraded to the hidden fallback — the user saw the app vanish, then had to
+    /// re-open it from the Dock after authenticating. Measured on this machine:
+    /// `CGWindowList` keeps reporting every window and its bounds through a `hide()`,
+    /// so the covers can be placed exactly where they belong.
+    private func adoptCachedWindows(_ windows: [OwnedWindow], target: Target) {
+        dismissCachedPanels()
+        var first = true
+        for window in windows {
+            let frame = coverFrame(for: window.frame)
+            guard frame.width >= 1, frame.height >= 1 else { continue }
+            let panel = WindowShieldPanel(
+                frame: frame,
+                content: WindowShieldView(appName: target.appName, icon: target.icon)
+            )
+            panel.onCancel = { [weak self] in self?.onCancelRequested?() }
+            if first {
+                panel.makeKeyAndOrderFront(nil)
+                first = false
+            } else {
+                panel.orderFront(nil)
+            }
+            cachedPanels.append(panel)
+        }
+        activeMode = .windowShield
+        fallbackReason = nil
+        dismissEmergencyCoverWhenReady()
+    }
+
+    private func dismissCachedPanels() {
+        for panel in cachedPanels {
+            panel.orderOut(nil)
+            panel.close()
+        }
+        cachedPanels.removeAll()
+    }
+
     /// Dismisses the stopgap once it has actually been composited **and** the
     /// per-window covers have taken its place.
     ///
@@ -405,7 +503,10 @@ final class WindowShieldManager {
 
         let shownFor = emergencyCoverShownAt.map { Date().timeIntervalSince($0) } ?? 1
         let pastMinimum = shownFor >= FIDConstants.emergencyCoverMinimumOnScreen
-        let coversReady = !panels.isEmpty && panels.values.allSatisfy(\.isVisible)
+        // Both cover kinds count: a snapshot cover is a real cover, and it is the one
+        // that is up while the app is still hidden.
+        let allCovers = Array(panels.values) + cachedPanels
+        let coversReady = !allCovers.isEmpty && allCovers.allSatisfy(\.isVisible)
         let overdue = emergencyCoverDeadline.map { Date() >= $0 } ?? true
 
         guard pastMinimum && (coversReady || overdue) else {
@@ -443,12 +544,20 @@ final class WindowShieldManager {
     /// panel's `canBecomeKey` exists to prevent.
     func restoreKeyPanel() {
         guard activeMode == .windowShield else { return }
-        panels.values.first(where: \.isVisible)?.makeKey()
+        if let panel = panels.values.first(where: \.isVisible) {
+            panel.makeKey()
+        } else {
+            cachedPanels.first(where: \.isVisible)?.makeKey()
+        }
     }
 
     private func coverFrame(for window: TrackedWindow) -> CGRect {
+        coverFrame(for: window.frame)
+    }
+
+    private func coverFrame(for frame: CGRect) -> CGRect {
         let outset = FIDConstants.shieldPanelOutset
-        return window.frame.insetBy(dx: -outset, dy: -outset)
+        return frame.insetBy(dx: -outset, dy: -outset)
     }
 
     private func makePanel(for window: TrackedWindow, target: Target) -> WindowShieldPanel {
@@ -470,6 +579,7 @@ final class WindowShieldManager {
             panel.close()
         }
         panels.removeAll()
+        dismissCachedPanels()
         tracker.stop()
         if let target, let app = NSRunningApplication(processIdentifier: target.pid) {
             app.hide()

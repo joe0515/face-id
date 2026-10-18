@@ -86,6 +86,13 @@ final class AppLocker {
         // whether activation is warranted, and restoring an app the user just
         // unlocked is exactly the intended case.
         app.activate()
+        // …but "the system decides" also means it may decide *not* to bring the
+        // windows back for an app whose windows were ordered out — leaving the user
+        // to click the Dock icon after a successful unlock. Raising the window
+        // explicitly is what actually restores it.
+        DispatchQueue.main.async {
+            AppWindowPresenter.raiseMainWindow(of: app)
+        }
     }
 
     /// User cancelled, or authentication failed permanently: end the app.

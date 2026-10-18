@@ -258,6 +258,15 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         // 若随后 `shield` 成功建起窗口遮罩，会立刻 `unhide()` 把 App 放回来 ——
         // 那时窗口已经在遮罩下面，用户看到的是「窗口被盖住」而不是「窗口消失了」。
         // 只有 `shield` 回落隐藏时才保持 hidden，即原项目的行为。
+        //
+        // ⚠️ hide 之后 **AX 读不到这个应用的任何窗口**（现场表现：`shield` 的 settle
+        // 一直等空 → 回落到隐藏 → 「界面一闪就消失、认证通过后还要去 Dock 重新点开」）。
+        // 所以 hide **之前**先用窗口服务器抓一份窗口快照交给 `shield`：AX 回来之前
+        // 先用快照把遮罩建起来，几十毫秒内就 `unhide()`，窗口根本没机会被销毁。
+        // `CGWindowList` 在 hide 后仍报告完整 bounds（已实测），而它在这里是 hide
+        // **前**读的，不需要任何额外权限。
+        let windowSnapshot = shield.onScreenWindows(for: runningApp.processIdentifier)
+
         runningApp.hide()
 
         // Hiding an app makes macOS asynchronously focus whatever comes next; without
@@ -273,7 +282,11 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         }
 
         challengeTask = Task { [weak self] in
-            await self?.blockThenAuthenticate(content: content, runningApp: runningApp)
+            await self?.blockThenAuthenticate(
+                content: content,
+                runningApp: runningApp,
+                windowSnapshot: windowSnapshot
+            )
         }
     }
 
@@ -317,12 +330,13 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
     /// shield would find nothing to cover and every challenge would silently degrade
     /// to the hidden fallback. `shield` owns both strategies and reports which one
     /// actually took effect; hiding only happens if that is what it chose.
-    private func blockThenAuthenticate(content: AppLockContent, runningApp: NSRunningApplication) async {
+    private func blockThenAuthenticate(content: AppLockContent, runningApp: NSRunningApplication, windowSnapshot: [WindowShieldManager.OwnedWindow]) async {
         let mode = await shield.shield(
             pid: runningApp.processIdentifier,
             bundleID: content.bundleID,
             appName: content.displayName,
-            icon: content.icon
+            icon: content.icon,
+            cachedWindows: windowSnapshot
         )
         guard !Task.isCancelled else { return }
 
