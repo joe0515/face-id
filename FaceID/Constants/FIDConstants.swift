@@ -207,9 +207,10 @@ nonisolated enum FIDConstants {
     /// （微信）被系统激活时，铺遮罩只会造成黑闪与无意义认证。
     static let freshLaunchThreshold: TimeInterval = 5.0
 
-    /// 「等窗口出现」轮询的步长（秒）。约一帧，尽量缩短「窗口已画出但遮罩未上」
-    /// 的可见时间。
-    static let windowProbeInterval: TimeInterval = 0.016
+    /// 「等窗口出现」轮询的步长（秒）。约半帧：窗口从「已合成」到「CG 报告
+    /// onScreen」之间还有窗口服务器的批处理延迟，步长越短，「窗口已画出但遮罩
+    /// 未上」的可见时间越短。
+    static let windowProbeInterval: TimeInterval = 0.008
 
     /// 遮罩面板相对目标窗口的外扩量（点），保留窗口自身阴影边缘。
     static let shieldPanelOutset: CGFloat = 0

@@ -247,6 +247,24 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
             isFreshLaunch: freshlyLaunched
         )
 
+        // 原项目（FaceGate `AppLocker.blockApp`）的 Step 1，也是唯一能在通知这一轮就
+        // 生效的手段：遮罩是**窗口级**的，要靠窗口服务器合成，从「应用被激活」到「遮罩
+        // 真的画出来」之间总有几帧窗口期 —— 表现出来就是「先看到界面再被遮罩」。
+        // `hide()` 在同一 runloop turn 生效，下一帧系统直接不画这个 App 的窗口。
+        //
+        // 顺序不能反：`imposeEmergencyCover` 的守卫看的是**隐藏前**的窗口状态
+        // （hide 之后 `kCGWindowIsOnscreen` 全变 false，遮罩会被自己的守卫挡掉）。
+        //
+        // 若随后 `shield` 成功建起窗口遮罩，会立刻 `unhide()` 把 App 放回来 ——
+        // 那时窗口已经在遮罩下面，用户看到的是「窗口被盖住」而不是「窗口消失了」。
+        // 只有 `shield` 回落隐藏时才保持 hidden，即原项目的行为。
+        runningApp.hide()
+
+        // Hiding an app makes macOS asynchronously focus whatever comes next; without
+        // taking focus back, the challenge can lose the keyboard a beat later.
+        // (FaceGate does the same, one runloop tick later.)
+        NSApp.activate(ignoringOtherApps: true)
+
         // Shown before the shield is set up so the user immediately sees *why* their
         // app just vanished. The blocking itself happens in the task below, where the
         // ordering constraint actually lives.
@@ -313,6 +331,11 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         switch mode {
         case .windowShield:
             lastOutcome = "以窗口遮罩拦截"
+            // The covers are already on screen (ordered front, key taken), so bringing
+            // the app back is safe: it paints *under* them. This is what keeps the
+            // product's preferred presentation — a cover over the app's own windows —
+            // instead of the upstream project's "the app simply vanishes".
+            runningApp.unhide()
         case .hidden:
             lastOutcome = "以隐藏应用拦截（\(shield.fallbackReason ?? "回落")）"
             // No cover exists, so nothing else can catch Esc — the notch panel must.
