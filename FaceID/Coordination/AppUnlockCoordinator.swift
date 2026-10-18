@@ -172,21 +172,42 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         guard let lockedApp = store.app(for: bundleID) else { return }
 
         let pid = runningApp.processIdentifier
+
+        // ① Already painting — challenge it right now, covers can go straight up.
         if shield.hasOnScreenWindow(pid: pid) {
             beginChallenge(for: lockedApp, runningApp: runningApp)
             return
         }
 
-        // 没有屏上窗口：既可能是「窗口还没画出来」，也可能是「关掉窗口后仍留在后台的
-        // 应用被系统激活」（例如刚退出照片时 macOS 把微信切到前台）。给一个很短的宽限
-        // 再看一眼 —— 没有窗口就没有可保护的内容，弹认证、铺遮罩都只是打扰。
+        // ② Nothing on screen and the process just started. `launchDate` is the
+        // authoritative signal; "no windows at all" only backs it up when the launch
+        // date is unavailable. Deliberately *not* "has no windows": an app that really
+        // destroys its windows when they are closed (unlike WeChat, which only orders
+        // them out) would then be mistaken for a cold start and get challenged with
+        // nothing on screen — exactly the failure mode branch ③ exists to prevent.
+        if let launchDate = runningApp.launchDate {
+            if Date().timeIntervalSince(launchDate) < FIDConstants.freshLaunchThreshold {
+                beginChallenge(for: lockedApp, runningApp: runningApp)
+                return
+            }
+        } else if !shield.hasAnyWindow(pid: pid) {
+            beginChallenge(for: lockedApp, runningApp: runningApp)
+            return
+        }
+
+        // ③ Nothing on screen and the app isn't starting up: its windows were closed
+        // while the process kept running (WeChat after its window is closed). macOS
+        // activates it when another app quits, and there is nothing to protect —
+        // challenging it there is pure noise (an authentication panel for a window
+        // that doesn't exist, plus a black flash). Give it a short grace in case a
+        // window is on its way, and stay quiet if none ever appears.
         windowProbeTask?.cancel()
         windowProbeTask = Task { [weak self] in
             guard let self else { return }
             let deadline = Date().addingTimeInterval(FIDConstants.windowAppearGrace)
             while Date() < deadline, !Task.isCancelled {
                 if self.shield.hasOnScreenWindow(pid: pid) { break }
-                try? await Task.sleep(for: .milliseconds(40))
+                try? await Task.sleep(for: .seconds(FIDConstants.windowProbeInterval))
             }
             guard !Task.isCancelled,
                   self.shield.hasOnScreenWindow(pid: pid),
@@ -217,7 +238,7 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         //
         // `isFreshLaunch` keeps the stopgap for a cold launch (window not created yet)
         // while skipping it for a background app that has no window to hide at all.
-        let freshlyLaunched = runningApp.launchDate.map { Date().timeIntervalSince($0) < 5 } ?? false
+        let freshlyLaunched = runningApp.launchDate.map { Date().timeIntervalSince($0) < FIDConstants.freshLaunchThreshold } ?? false
         shield.imposeEmergencyCover(
             pid: runningApp.processIdentifier,
             bundleID: bundleID,

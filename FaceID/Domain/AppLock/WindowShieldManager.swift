@@ -73,8 +73,10 @@ final class WindowShieldManager {
     /// per-window covers are up". See `imposeEmergencyCover`.
     @ObservationIgnored private var emergencyCover: WindowShieldPanel?
     /// When the current stopgap was ordered front — see
-    /// `dismissEmergencyCoverAfterMinimumOnScreen`.
+    /// `dismissEmergencyCoverWhenReady`.
     @ObservationIgnored private var emergencyCoverShownAt: Date?
+    /// Hard deadline for the stopgap; see `FIDConstants.emergencyCoverMaxWait`.
+    @ObservationIgnored private var emergencyCoverDeadline: Date?
 
     private init() {}
 
@@ -218,11 +220,23 @@ final class WindowShieldManager {
         panel.makeKeyAndOrderFront(nil)
         emergencyCover = panel
         emergencyCoverShownAt = Date()
+        emergencyCoverDeadline = Date().addingTimeInterval(FIDConstants.emergencyCoverMaxWait)
     }
 
     private struct OwnedWindow {
         let frame: CGRect
         let isOnScreen: Bool
+    }
+
+    /// Whether the process has any window at all — on screen or not.
+    ///
+    /// The complement of `hasOnScreenWindow`'s question. "No windows whatsoever"
+    /// means the process is still starting up and is about to paint, which is exactly
+    /// when a stopgap is needed; "windows exist but none on screen" means they were
+    /// closed, and covering would be a black flash. See
+    /// `AppUnlockCoordinator.handleLockedAppDetected`.
+    func hasAnyWindow(pid: pid_t) -> Bool {
+        !Self.windowInfo(for: pid).isEmpty
     }
 
     /// Whether the process currently has anything on screen.
@@ -293,6 +307,7 @@ final class WindowShieldManager {
         guard let panel = emergencyCover else { return }
         emergencyCover = nil
         emergencyCoverShownAt = nil
+        emergencyCoverDeadline = nil
         panel.orderOut(nil)
         panel.close()
     }
@@ -365,29 +380,45 @@ final class WindowShieldManager {
         // The real covers are on screen, so the stopgap is only in the way now —
         // removing it here is what turns "whole screen blacked out" into "only the
         // app's windows".
-        dismissEmergencyCoverAfterMinimumOnScreen()
+        dismissEmergencyCoverWhenReady()
     }
 
-    /// Dismisses the stopgap, but only once it has actually been composited.
+    /// Dismisses the stopgap once it has actually been composited **and** the
+    /// per-window covers have taken its place.
     ///
-    /// For an already-running app, `shield` can find its windows on the very first
-    /// read: the cover is created and torn down inside one runloop turn, the window
-    /// server never paints it, and the app's window is visible until the per-window
-    /// covers land — the "full-screen cover never appears" symptom.
-    private func dismissEmergencyCoverAfterMinimumOnScreen() {
+    /// Two failure modes it exists to prevent:
+    ///
+    /// 1. *The stopgap never appears.* For an already-running app, `shield` can find
+    ///    its windows on the very first read: the cover is created and torn down
+    ///    inside one runloop turn, the window server never paints it, and the app's
+    ///    window is visible until the per-window covers land.
+    /// 2. *The stopgap disappears too early.* `makeKeyAndOrderFront` only *asks* the
+    ///    window server to composite the new panels. If the stopgap is dropped before
+    ///    that happens, the user gets a frame with nothing covering the app — the
+    ///    "full-screen cover vanished, then the app appeared" symptom.
+    ///
+    /// So it waits for both a minimum on-screen time and every window cover to report
+    /// `isVisible`, polling once per frame, and gives up at `emergencyCoverMaxWait`
+    /// rather than blocking the screen forever.
+    private func dismissEmergencyCoverWhenReady() {
         guard let panel = emergencyCover else { return }
+
         let shownFor = emergencyCoverShownAt.map { Date().timeIntervalSince($0) } ?? 1
-        let remaining = FIDConstants.emergencyCoverMinimumOnScreen - shownFor
-        guard remaining > 0 else {
-            dismissEmergencyCover()
+        let pastMinimum = shownFor >= FIDConstants.emergencyCoverMinimumOnScreen
+        let coversReady = !panels.isEmpty && panels.values.allSatisfy(\.isVisible)
+        let overdue = emergencyCoverDeadline.map { Date() >= $0 } ?? true
+
+        guard pastMinimum && (coversReady || overdue) else {
+            // One frame later, then look again. The deadline guarantees this ends.
+            DispatchQueue.main.async { [weak self] in
+                // A later challenge may have replaced the cover while we waited.
+                guard let self, self.emergencyCover === panel else { return }
+                self.dismissEmergencyCoverWhenReady()
+            }
             return
         }
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(remaining))
-            // A later challenge may have replaced the cover while this slept.
-            guard let self, self.emergencyCover === panel else { return }
-            self.dismissEmergencyCover()
-        }
+
+        dismissEmergencyCover()
     }
 
     private func presentPanels() {
@@ -440,12 +471,12 @@ final class WindowShieldManager {
         }
         panels.removeAll()
         tracker.stop()
-        // The app is about to be hidden outright, so nothing is left to cover.
-        dismissEmergencyCover()
-
         if let target, let app = NSRunningApplication(processIdentifier: target.pid) {
             app.hide()
         }
+        // After the hide, not before: dropping the stopgap first would leave a frame
+        // with the app still on screen and nothing covering it.
+        dismissEmergencyCover()
 
         activeMode = .hidden
         fallbackReason = reason

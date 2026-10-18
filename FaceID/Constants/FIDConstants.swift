@@ -192,6 +192,25 @@ nonisolated enum FIDConstants {
     /// 「没有全屏遮罩、界面先露出来」。约 4 帧，足以让它真正合成一次。
     static let emergencyCoverMinimumOnScreen: TimeInterval = 0.06
 
+    /// 应急全屏遮罩在「窗口遮罩尚未合成」时最多继续停留的时长（秒）。
+    ///
+    /// 撤销条件不只是「显示够久」：新建的窗口遮罩面板 `orderFront` 之后，窗口
+    /// 服务器还要一两个轮次才真正合成。若此时就撤掉全屏遮罩，中间那一帧会露出
+    /// App 界面 —— 即「全屏遮罩消失、界面先露出来」。因此等窗口遮罩全部可见再撤，
+    /// 但用这个上界兜底，绝不能无限挡屏。
+    static let emergencyCoverMaxWait: TimeInterval = 0.5
+
+    /// 进程启动多久之内算「冷启动」（秒）。
+    ///
+    /// 用于区分两种「没有屏上窗口」：冷启动时窗口还没建出来（必须立刻铺全屏
+    /// 遮罩，否则用户会先看到界面）；而一个几小时前启动、窗口只是被关掉的进程
+    /// （微信）被系统激活时，铺遮罩只会造成黑闪与无意义认证。
+    static let freshLaunchThreshold: TimeInterval = 5.0
+
+    /// 「等窗口出现」轮询的步长（秒）。约一帧，尽量缩短「窗口已画出但遮罩未上」
+    /// 的可见时间。
+    static let windowProbeInterval: TimeInterval = 0.016
+
     /// 遮罩面板相对目标窗口的外扩量（点），保留窗口自身阴影边缘。
     static let shieldPanelOutset: CGFloat = 0
 

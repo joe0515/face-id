@@ -67,7 +67,7 @@
 
 ```bash
 make build      # Debug 构建
-make test       # 单元测试（55 用例 / 8 套件）
+make test       # 单元测试（57 用例 / 9 套件）
 make release    # Release 构建 + DMG → build/dist/
 ```
 
