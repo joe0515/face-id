@@ -258,15 +258,6 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         // 若随后 `shield` 成功建起窗口遮罩，会立刻 `unhide()` 把 App 放回来 ——
         // 那时窗口已经在遮罩下面，用户看到的是「窗口被盖住」而不是「窗口消失了」。
         // 只有 `shield` 回落隐藏时才保持 hidden，即原项目的行为。
-        //
-        // ⚠️ hide 之后 **AX 读不到这个应用的任何窗口**（现场表现：`shield` 的 settle
-        // 一直等空 → 回落到隐藏 → 「界面一闪就消失、认证通过后还要去 Dock 重新点开」）。
-        // 所以 hide **之前**先用窗口服务器抓一份窗口快照交给 `shield`：AX 回来之前
-        // 先用快照把遮罩建起来，几十毫秒内就 `unhide()`，窗口根本没机会被销毁。
-        // `CGWindowList` 在 hide 后仍报告完整 bounds（已实测），而它在这里是 hide
-        // **前**读的，不需要任何额外权限。
-        let windowSnapshot = shield.onScreenWindows(for: runningApp.processIdentifier)
-
         runningApp.hide()
 
         // Hiding an app makes macOS asynchronously focus whatever comes next; without
@@ -282,11 +273,7 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
         }
 
         challengeTask = Task { [weak self] in
-            await self?.blockThenAuthenticate(
-                content: content,
-                runningApp: runningApp,
-                windowSnapshot: windowSnapshot
-            )
+            await self?.blockThenAuthenticate(content: content, runningApp: runningApp)
         }
     }
 
@@ -330,30 +317,28 @@ final class AppUnlockCoordinator: AppLockChallengePresenting {
     /// shield would find nothing to cover and every challenge would silently degrade
     /// to the hidden fallback. `shield` owns both strategies and reports which one
     /// actually took effect; hiding only happens if that is what it chose.
-    private func blockThenAuthenticate(content: AppLockContent, runningApp: NSRunningApplication, windowSnapshot: [WindowShieldManager.OwnedWindow]) async {
+    private func blockThenAuthenticate(content: AppLockContent, runningApp: NSRunningApplication) async {
         let mode = await shield.shield(
             pid: runningApp.processIdentifier,
             bundleID: content.bundleID,
             appName: content.displayName,
-            icon: content.icon,
-            cachedWindows: windowSnapshot
+            icon: content.icon
         )
         guard !Task.isCancelled else { return }
 
         locker.block(bundleID: content.bundleID, runningApp: runningApp, hidesApp: mode == .hidden)
 
         switch mode {
-        case .windowShield:
-            lastOutcome = "以窗口遮罩拦截"
-            // The covers are already on screen (ordered front, key taken), so bringing
-            // the app back is safe: it paints *under* them. This is what keeps the
-            // product's preferred presentation — a cover over the app's own windows —
-            // instead of the upstream project's "the app simply vanishes".
-            runningApp.unhide()
         case .hidden:
-            lastOutcome = "以隐藏应用拦截（\(shield.fallbackReason ?? "回落")）"
+            lastOutcome = "以隐藏应用拦截"
             // No cover exists, so nothing else can catch Esc — the notch panel must.
             notch.makeAppLockKey()
+        case .windowShield:
+            // Retired strategy — `requestedMode` is pinned to `.hidden`, so this arm is
+            // unreachable today. Kept so switching the shield back on is a one-line
+            // change rather than a rewrite.
+            lastOutcome = "以窗口遮罩拦截"
+            runningApp.unhide()
         case .none:
             lastOutcome = "未拦截"
         }

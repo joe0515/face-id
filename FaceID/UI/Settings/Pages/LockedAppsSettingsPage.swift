@@ -26,11 +26,6 @@ struct LockedAppsSettingsPage: View {
     @State private var sessionWindow: SessionWindow = .from(AppLockSessionManager.shared.sessionTimeout)
     @State private var sessionFromFocus = AppLockSessionManager.shared.sessionTimerFromFocus
 
-    /// `WindowShieldManager.requestedMode` reads `UserDefaults` directly for the same
-    /// reason. Kept separate from `AppLockSessionManager`'s mirror so the two can't
-    /// overwrite each other's `@State`.
-    @State private var shieldMode: FIDConstants.ShieldMode = WindowShieldManager.shared.requestedMode
-
     @State private var touchIDEnabled = TouchIDAuth.shared.isEnabled
     @State private var isPickingApps = false
     @State private var isUnlocking = false
@@ -124,7 +119,7 @@ struct LockedAppsSettingsPage: View {
     private var enabledContent: some View {
         VStack(alignment: .leading, spacing: SettingsMetrics.rowSpacing) {
             masterGroup
-            if !permission.isFullyGranted && shieldMode == .windowShield {
+            if !permission.isFullyGranted {
                 accessibilityNotice
             }
             lockedAppsSection
@@ -172,20 +167,6 @@ struct LockedAppsSettingsPage: View {
                 subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
             ) {
                 FIDToggle(isOn: $coordinator.isEnabled)
-            }
-            SettingsGroupDivider()
-            SettingsRowContent(
-                title: "锁定时",
-                info: "「遮住应用窗口」让你能继续使用屏幕的其余部分。当遮罩不可靠时会自动改为隐藏应用 —— 全屏、调度中心、或切换 Space。"
-            ) {
-                SettingsMenuPickerPill(label: shieldMode.title) {
-                    ForEach(FIDConstants.ShieldMode.allCases) { mode in
-                        Button(mode.title) {
-                            shieldMode = mode
-                            WindowShieldManager.shared.requestedMode = mode
-                        }
-                    }
-                }
             }
             SettingsGroupDivider()
             SettingsRowContent(
