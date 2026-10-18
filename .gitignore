@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Xcode 用户数据（个人/机器相关，不入库）
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+
+# 构建产物
+build/
+DerivedData/
+*.ipa
+*.dmg
+*.xcarchive
+
+# 构建日志
+build.log
+test.log
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# AI 会话工作区（本地记录，含本机绝对路径，不入库）
+.workbuddy/
+
+# 上游参考源码：仅本地保留用于比对，不随本仓库发布
+# 作者、许可与致谢见 README「致谢」一节
+glance-main/
+FaceGate-Mac-main/
