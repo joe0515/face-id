@@ -248,13 +248,23 @@ enum SecureCredentialManager {
 
     /// Forces a fresh read even when the key is already cached, so the ACL dialog (if
     /// this build hasn't been authorized yet) appears at a moment the user chose rather
-    /// than in the middle of a face scan. Called from the menu bar item.
+    /// than in the middle of a face scan. Called from the menu bar item, and from the
+    /// unlock path *before* it starts scanning.
+    ///
+    /// Reads the password blob as well as the session key. They are two separate
+    /// keychain items with independent ACLs, and both are keyed to the cdhash — an
+    /// authorization that only covers the key leaves the read on the unlock path to
+    /// spring the very dialog this method exists to pre-empt. That is where the
+    /// "two prompts in a row" report came from.
     nonisolated static func reauthorizeKeychain(reason: String) async throws {
         guard KeychainManager.exists(account: sessionKeyAccount) else {
             throw SecureCredentialError.sessionKeyUnavailable
         }
         let data = try await readSessionKey(reason: reason)
         setCachedKey(SymmetricKey(data: data))
+        if KeychainManager.exists(account: passwordBlobAccount) {
+            _ = try readPassword()
+        }
     }
 
     /// Asks for Touch ID — or the login password where there's no biometric hardware.

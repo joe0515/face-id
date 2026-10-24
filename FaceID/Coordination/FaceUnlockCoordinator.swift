@@ -236,6 +236,31 @@ final class FaceUnlockCoordinator {
                 self.hasArmedForCurrentLock = false
                 return
             }
+
+            // 应用更新后（ad-hoc 每次重编 cdhash 都变），旧钥匙串条目的 ACL 不再认这个
+            // 进程。若等到扫脸成功后才去读密码，系统会在这时弹出「Face ID 想要使用你
+            // 储存在钥匙串的…」并要求输入登录密码 —— 那读起来就是「解锁坏了」，而且
+            // 会话密钥与密码数据是两个独立条目，会连弹两次。
+            //
+            // 所以在扫描开始前就把那一次授权做掉：先把刘海面板显示出来（用户知道解锁
+            // 正在进行），再弹那一个框；选「始终允许」后立刻继续扫脸，无感衔接。
+            if KeychainTrust.needsAuthorization {
+                UnlockDiagnostics.log("  · 钥匙串 ACL 不认当前构建，先完成授权再扫描")
+                if self.showsUI {
+                    NotchOverlayController.shared.arm { [weak self] in self?.startScanCycle() }
+                }
+                do {
+                    try await SecureCredentialManager.reauthorizeKeychain(
+                        reason: "Face ID 更新后需要重新确认钥匙串访问，才能读取解锁密码。请选择「始终允许」。"
+                    )
+                } catch {
+                    UnlockDiagnostics.log("  · 钥匙串重新授权失败：\(error.localizedDescription)")
+                    self.statusMessage = "钥匙串授权未完成 —— 读不出解锁密码。请在系统弹窗里选择「始终允许」，或从菜单栏「需要授权…」重试。"
+                    return
+                }
+                UnlockDiagnostics.log("  · 钥匙串重新授权成功，继续扫描")
+            }
+
             await self.arm(autoScan: shouldAutoScan)
         }
     }
@@ -366,6 +391,17 @@ final class FaceUnlockCoordinator {
         // path picks it up again shortly.
         guard cameraArbiter.acquire(.systemUnlock) else {
             UnlockDiagnostics.log("runScanCycle: 相机租约被拒绝（当前持有者 \(String(describing: cameraArbiter.currentOwner))），本次不扫描")
+            return
+        }
+
+        // Hover- and auto-retry reach this point without going through
+        // `evaluateTrigger`, so the keychain gate above doesn't cover them. Scanning
+        // anyway would match a face and then fail to read the password — the ambush
+        // this whole path is meant to avoid. Point the user at the menu-bar item
+        // instead of pretending to work.
+        guard !KeychainTrust.needsAuthorization else {
+            UnlockDiagnostics.log("runScanCycle: 钥匙串 ACL 不认当前构建，本次不扫描（请从菜单栏「需要授权…」完成授权）")
+            statusMessage = "应用已更新，需要重新授权钥匙串访问 —— 请从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
             return
         }
 
