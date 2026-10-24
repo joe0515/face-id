@@ -160,7 +160,7 @@ struct PermissionReviewStepView: View {
             HStack(spacing: 10) {
                 // TCC decisions are pinned at launch, so granting without relaunching
                 // changes nothing — this is the button that actually makes it stick.
-                PillButton(title: "重新启动", style: .secondary) {
+                PillButton(title: "重启生效", style: .secondary) {
                     AppRelauncher.relaunch()
                 }
                 PillButton(title: "完成", isDefault: true) {

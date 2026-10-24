@@ -886,12 +886,23 @@ final class OnboardingController {
 
     /// The merged Accessibility row's status line: which half is still missing, or where
     /// the single checkbox lives once both are granted.
+    ///
+    /// The "already requested" case gets its own wording because of how TCC behaves:
+    /// macOS pins the answer **at process launch**, so after ticking the box this
+    /// process keeps reading the old value until it restarts. Without saying so, the row
+    /// sits at a red dot forever and reads as "the grant didn't work".
     var accessibilityDetail: String {
         let p = accessibilityPrivileges
         if p.isFullyGranted { return "系统设置 › 隐私与安全性 › 辅助功能" }
+        if accessibilityWasRequested { return "已请求 · 勾选后需点「重新启动」" }
         if p.canReadWindows { return "还缺：发送按键事件" }
         if p.canPostEvents { return "还缺：读取其他应用的窗口" }
         return "读取窗口 + 发送按键事件"
+    }
+
+    /// True once the user has been sent to the system prompt for either privilege.
+    private var accessibilityWasRequested: Bool {
+        hasPromptedAccessibility || hasPromptedPostEvent
     }
 
     // MARK: - Keychain authorization
@@ -899,13 +910,20 @@ final class OnboardingController {
     /// The review has exactly one caption slot; either source can fill it, so the panel
     /// height only depends on "is there a hint", not on which one.
     var permissionReviewHasHint: Bool {
-        keychainError != nil || accessibilityPrivileges.isPartiallyGranted
+        keychainError != nil || accessibilityPrivileges.isPartiallyGranted || accessibilityWasRequested
     }
 
     var permissionReviewHint: String? {
         if let keychainError { return keychainError }
         if accessibilityPrivileges.isPartiallyGranted {
             return "两项没有单独的开关。授予后需点「重新启动」；仍无效就把 Face ID 用「−」移除再「+」加回。"
+        }
+        if accessibilityWasRequested, !accessibilityPrivileges.isFullyGranted {
+            // macOS pins the TCC answer at launch, and an ad-hoc build's identity is its
+            // cdhash — so a box ticked for an earlier build looks granted in System
+            // Settings while this process still reads "no". Both facts have to be named,
+            // or the user keeps waiting for a dot that cannot turn green on its own.
+            return "已在设置里勾选？需点「重新启动」才生效（macOS 在进程启动时固定权限判定）；若列表里已有旧的 Face ID 条目，先用「−」移除再「+」添加。"
         }
         return nil
     }
