@@ -45,6 +45,14 @@ struct NotchGeometry {
     /// Independent of `notchOpenSize`; larger by default since the pill has no camera housing.
     static let pillOpenSize = CGSize(width: 180, height: 180)
 
+    /// Body size for a plain-text `notice` (see `Phase.notice`).
+    ///
+    /// The scan footprint is sized for an animation and clips a sentence: the notice that
+    /// tells the user to re-authorize the keychain rendered as two chopped lines. Text
+    /// needs width, not height, so this is wide and short.
+    static let noticeOpenWidth: CGFloat = 340
+    static let noticeOpenHeight: CGFloat = 150
+
     /// Never zero — the whole point of the pill is that it's detached from the edge.
     static let pillTopGap: CGFloat = 3
 

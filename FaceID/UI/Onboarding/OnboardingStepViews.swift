@@ -153,6 +153,10 @@ struct PermissionReviewStepView: View {
                 Text(hint)
                     .font(FIDTheme.Font.rowDetail)
                     .foregroundStyle(FIDTheme.textDetail)
+                    // Two lines is what the height allowance covers — see
+                    // `permissionReviewHintHeight`. Unbounded wrapping here is what clipped
+                    // the longer "restart to take effect" hint against the panel bottom.
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 4)
             }

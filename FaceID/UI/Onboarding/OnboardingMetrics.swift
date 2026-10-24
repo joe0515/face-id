@@ -54,12 +54,15 @@ enum OnboardingMetrics {
     ///
     /// Re-measured 2026-10-24 after the two Accessibility rows were merged into one
     /// (they are a single checkbox in System Settings): three rows, rendered at
-    /// `panelWidth` with `ImageRenderer` — notch 354 / pill 332 without the caption,
-    /// and +38 with it.
-    static let notchPermissionReviewHeight: CGFloat = 392
-    static let pillPermissionReviewHeight: CGFloat = 370
-    /// The caption line plus the stack spacing it introduces — 38 in both styles.
-    static let permissionReviewHintHeight: CGFloat = 38
+    /// `panelWidth` with `ImageRenderer` — notch 354 / pill 332 without the caption.
+    ///
+    /// The caption allowance went 38 → 56 in the same pass: the merged row's "you must
+    /// restart for this to take effect" hint is two lines, not one, and the one-line
+    /// figure clipped it.
+    static let notchPermissionReviewHeight: CGFloat = 410
+    static let pillPermissionReviewHeight: CGFloat = 388
+    /// The caption line(s) plus the stack spacing they introduce.
+    static let permissionReviewHintHeight: CGFloat = 56
 
     /// `withHint` is false while both Accessibility privileges are still missing — the
     /// caption only exists in the half-granted state, and reserving room for it

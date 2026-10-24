@@ -122,6 +122,11 @@ struct NotchOverlayView: View {
 
     private var openBodySize: CGSize {
         if let onboardingController { return onboardingController.panelSize }
+        // A notice is a sentence, not a scan: 220×200 fits an animation but clips text
+        // outright. It gets its own wider, shorter body instead.
+        if case .notice = controller.content {
+            return CGSize(width: NotchGeometry.noticeOpenWidth, height: NotchGeometry.noticeOpenHeight)
+        }
         return usesMinimalSilhouette ? minimalOpenBodySize : scanOpenSize
     }
 
