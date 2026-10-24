@@ -18,6 +18,8 @@ struct GeneralSettingsPage: View {
     /// Refreshed when the app regains focus, so granting the permission in
     /// System Settings clears the prompt below without a relaunch.
     @State private var inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
+    /// Result of the last diagnostics export — shown as a caption under the row.
+    @State private var diagnosticsNote: String?
 
     private var needsInputMonitoring: Bool {
         settings.unlockTriggers.contains(.onSpace) && inputMonitoring != .granted
@@ -27,6 +29,29 @@ struct GeneralSettingsPage: View {
     /// Face ID's, so it's meaningless. See `SpaceKeyMonitor.isLaunchedByXcode`.
     private var hasInheritedXcodePermission: Bool {
         settings.unlockTriggers.contains(.onSpace) && SpaceKeyMonitor.isLaunchedByXcode
+    }
+
+    /// Copies the unlock-path trace somewhere the user can attach it to a bug report.
+    private func exportDiagnostics() {
+        guard let url = UnlockDiagnostics.logURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            diagnosticsNote = "暂无诊断记录 —— 还没有发生过唤醒或锁屏事件。"
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Face ID 诊断日志.txt"
+        panel.begin { response in
+            guard response == .OK, let destination = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: url, to: destination)
+                diagnosticsNote = "已导出到 \(destination.path)"
+            } catch {
+                diagnosticsNote = "导出失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     var body: some View {
@@ -106,6 +131,23 @@ struct GeneralSettingsPage: View {
                     ),
                     stopCount: FIDSettings.faceDetectionRange.count
                 )
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsSectionTitle(text: "诊断")
+            SettingsGroup {
+                SettingsRowContent(
+                    title: "导出诊断日志",
+                    subtitle: "记录每次唤醒/锁屏事件走到了哪一步。遇到「打开屏幕却拉不起人脸认证」时，导出来发我定位。"
+                ) {
+                    Button("导出…") { exportDiagnostics() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(FIDTheme.accent)
+                }
+            }
+            if let diagnosticsNote {
+                SettingsCaption(text: diagnosticsNote)
             }
         }
 

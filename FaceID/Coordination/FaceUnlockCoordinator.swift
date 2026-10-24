@@ -96,6 +96,12 @@ final class FaceUnlockCoordinator {
             _ = lockMonitor.eventCount
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
+                // Logged inside the actor context: the closure itself is nonisolated,
+                // and both the monitor's properties and the logger are main-actor
+                // isolated.
+                if let self {
+                    UnlockDiagnostics.log("事件：lastEvent=\(String(describing: self.lockMonitor.lastEvent)) eventCount=\(self.lockMonitor.eventCount)")
+                }
                 self?.observeLockAndWakeEvents()
                 self?.scheduleTriggerEvaluation()
             }
@@ -111,7 +117,12 @@ final class FaceUnlockCoordinator {
     /// the lid closed, so nothing ever fires again. The scan then simply never arms,
     /// which is indistinguishable from "the feature is switched off".
     ///
-    /// The loop stops as soon as a scan is armed, and is cheap otherwise (4 Hz).
+    /// The loop is cheap (4 Hz) and stops early once the machine is unlocked — the
+    /// `disarm` path runs `cancel()` on it. It deliberately does **not** stop when a
+    /// scan arms: `arm()` happens 250 ms later and can fail on its own (the machine
+    /// got unlocked in the meantime, the camera lease was refused, the camera failed
+    /// to start), and those failures used to leave this lock session permanently
+    /// unarmed — "the prompt never comes back".
     private func scheduleTriggerEvaluation() {
         triggerProbeTask?.cancel()
         triggerProbeTask = Task { [weak self] in
@@ -122,7 +133,6 @@ final class FaceUnlockCoordinator {
 
                 if LockMonitor.isScreenActuallyLocked() {
                     self.evaluateTrigger()
-                    if self.hasArmedForCurrentLock { return }
                 } else if probe == 0 {
                     // Keep the original bookkeeping for the "still unlocked" case: it
                     // clears the one-shot guards and drops any stale overlay.
@@ -135,13 +145,19 @@ final class FaceUnlockCoordinator {
     }
 
     private func evaluateTrigger() {
-        guard LockMonitor.isScreenActuallyLocked() else {
+        let locked = LockMonitor.isScreenActuallyLocked()
+        UnlockDiagnostics.log("evaluateTrigger: locked=\(locked) lastEvent=\(String(describing: lockMonitor.lastEvent)) sleeping=\(lockMonitor.isSleeping) armed=\(hasArmedForCurrentLock)")
+
+        guard locked else {
             hasArmedForCurrentLock = false
             hasAutoRetriedForCurrentLock = false
             disarmOverlay()
             return
         }
-        guard !lockMonitor.isSleeping else { return }
+        guard !lockMonitor.isSleeping else {
+            UnlockDiagnostics.log("  → 放弃：isSleeping 仍为 true")
+            return
+        }
 
         // `.wake` (sleep, display sleep, or screensaver stopping) is an explicit "let me back in," so clear the one-shot guard.
         // `isWithinRecentArmBurst` keeps the several wake signals from one lid-open from each re-arming and fighting over the camera.
@@ -152,17 +168,49 @@ final class FaceUnlockCoordinator {
         // Runs before the hasArmedForCurrentLock guard — the space monitor's lifetime is tied to "locked + opted in," not to whether a scan already ran.
         updateSpaceMonitor()
 
-        guard isEnabled, !hasArmedForCurrentLock else { return }
-        guard let signal = requiredTrigger(for: lockMonitor.lastEvent) else { return }
+        guard isEnabled else {
+            UnlockDiagnostics.log("  → 放弃：整机解锁开关未开启")
+            return
+        }
+
+        // `hasArmedForCurrentLock` is a one-shot per lock session, reset when the
+        // machine is seen unlocked or on a new wake. The distributed
+        // `screenIsUnlocked` notification it depends on can be **lost** — the process
+        // may be suspended across the transition, which is exactly what happens when
+        // the lid closes. A lost reset latches this flag on forever and every later
+        // wake is swallowed here: "the face prompt never appears again."
+        //
+        // So the flag is only honoured while an attempt is genuinely still running.
+        // Once nothing is scanning, nothing is retrying and the panel is back at
+        // rest, a later signal may arm again — which is also what makes a failed arm
+        // (camera refused, machine unlocked mid-delay) recoverable.
+        if hasArmedForCurrentLock, isAttemptInFlight {
+            UnlockDiagnostics.log("  → 放弃：本次锁定已 arm 且尝试仍在进行")
+            return
+        }
+        if hasArmedForCurrentLock {
+            UnlockDiagnostics.log("  · 上一次 arm 的尝试已结束，允许本次锁定再次 arm（不依赖 screenIsUnlocked 通知）")
+            hasArmedForCurrentLock = false
+        }
+
+        guard let signal = requiredTrigger(for: lockMonitor.lastEvent) else {
+            UnlockDiagnostics.log("  → 放弃：lastEvent=\(String(describing: lockMonitor.lastEvent)) 不是可触发信号")
+            return
+        }
         // A pinned display that isn't connected bails entirely rather than showing up elsewhere; "Main display" (nil) always resolves.
-        guard NotchGeometry.preferredScreen() != nil else { return }
+        guard NotchGeometry.preferredScreen() != nil else {
+            UnlockDiagnostics.log("  → 放弃：没有可用的屏幕")
+            return
+        }
 
         guard SecureCredentialManager.isSessionUnlocked else {
             statusMessage = "整机解锁已开启，但会话处于锁定状态 —— 请先在「密码」设置里验证一次。"
+            UnlockDiagnostics.log("  → 放弃：会话处于锁定状态（这是「拉不起认证界面」最常见的原因，且界面上没有任何提示）")
             return
         }
         guard SecureCredentialManager.hasStoredPassword() else {
             statusMessage = "整机解锁已开启，但还没有存储密码。"
+            UnlockDiagnostics.log("  → 放弃：尚未存储密码")
             return
         }
 
@@ -175,11 +223,28 @@ final class FaceUnlockCoordinator {
 
         hasArmedForCurrentLock = true
         lastArmedAt = .now
+        UnlockDiagnostics.log("  → arm（信号 \(signal.title)，autoScan=\(shouldAutoScan)）")
         Task { [weak self] in
             // arm() only shows a small closed notch silhouette, so this only needs a brief buffer past the login window's entrance.
             try? await Task.sleep(nanoseconds: 250_000_000)
-            await self?.arm(autoScan: shouldAutoScan)
+            guard let self else { return }
+            // The 250 ms buffer is exactly where a failed arm used to disappear:
+            // the machine got unlocked, or `arm()`'s own guard rejected it. Log which,
+            // and leave `hasArmedForCurrentLock` consistent with what actually shows.
+            guard LockMonitor.isScreenActuallyLocked() else {
+                UnlockDiagnostics.log("  → arm 前机器已解锁，放弃本次 arm（下次唤醒可重新触发）")
+                self.hasArmedForCurrentLock = false
+                return
+            }
+            await self.arm(autoScan: shouldAutoScan)
         }
+    }
+
+    /// Whether an unlock attempt is genuinely still occupying the camera or the
+    /// overlay. See `evaluateTrigger` — this is what `hasArmedForCurrentLock` is
+    /// allowed to suppress.
+    private var isAttemptInFlight: Bool {
+        scanTask != nil || autoRetryTask != nil || NotchOverlayController.shared.phase == .scanning
     }
 
     /// Whether the last arm was recent enough to be part of the same wake burst rather than a new one.
@@ -251,12 +316,17 @@ final class FaceUnlockCoordinator {
 
     /// Either way the overlay still arms — a deselected trigger only skips the automatic scan, leaving hover-to-start available.
     private func arm(autoScan: Bool) async {
-        guard LockMonitor.isScreenActuallyLocked() else { return }
+        guard LockMonitor.isScreenActuallyLocked() else {
+            UnlockDiagnostics.log("arm(): 屏幕已解锁，不显示面板")
+            return
+        }
         guard showsUI else {
             // Headless: evaluateTrigger() already guaranteed autoScan is true here, so this is just "start scanning."
+            UnlockDiagnostics.log("arm(): 无界面模式，直接扫描")
             startScanCycle()
             return
         }
+        UnlockDiagnostics.log("arm(): 显示刘海面板（autoScan=\(autoScan)）")
         NotchOverlayController.shared.arm { [weak self] in
             self?.startScanCycle()
         }
@@ -294,16 +364,21 @@ final class FaceUnlockCoordinator {
         // holder of equal-or-higher priority refused to yield, skip this cycle
         // rather than opening a second session. The scan timeout / hover-to-retry
         // path picks it up again shortly.
-        guard cameraArbiter.acquire(.systemUnlock) else { return }
+        guard cameraArbiter.acquire(.systemUnlock) else {
+            UnlockDiagnostics.log("runScanCycle: 相机租约被拒绝（当前持有者 \(String(describing: cameraArbiter.currentOwner))），本次不扫描")
+            return
+        }
 
         await camera.start()
         guard generation == scanGeneration else { return }
 
         if let error = camera.errorMessage {
+            UnlockDiagnostics.log("runScanCycle: 相机启动失败 —— \(error)")
             statusMessage = error
             stopCapture()
             return
         }
+        UnlockDiagnostics.log("runScanCycle: 相机已启动，开始扫描（窗口 \(scanWindowDuration)s）")
 
         let showsUI = self.showsUI
         if showsUI {
