@@ -151,6 +151,9 @@ final class FaceUnlockCoordinator {
         guard locked else {
             hasArmedForCurrentLock = false
             hasAutoRetriedForCurrentLock = false
+            // A notice (e.g. "re-authorize the keychain once you're logged in") has
+            // nothing to say once the machine is unlocked.
+            NotchOverlayController.shared.dismissNotice()
             disarmOverlay()
             return
         }
@@ -238,27 +241,23 @@ final class FaceUnlockCoordinator {
             }
 
             // 应用更新后（ad-hoc 每次重编 cdhash 都变），旧钥匙串条目的 ACL 不再认这个
-            // 进程。若等到扫脸成功后才去读密码，系统会在这时弹出「Face ID 想要使用你
-            // 储存在钥匙串的…」并要求输入登录密码 —— 那读起来就是「解锁坏了」，而且
-            // 会话密钥与密码数据是两个独立条目，会连弹两次。
+            // 进程。此时**不能**在锁屏上引导授权：`reauthorizeKeychain` 走 LAContext，
+            // 而未登录状态下触控 ID 不可用、系统弹出的密码框也无法交互 —— 用户看到的
+            // 就是「扫脸时冒出个密码输入框，然后无响应」（glance 从不会走到这里：它的
+            // ACL 不失效，从不重新授权）。
             //
-            // 所以在扫描开始前就把那一次授权做掉：先把刘海面板显示出来（用户知道解锁
-            // 正在进行），再弹那一个框；选「始终允许」后立刻继续扫脸，无感衔接。
+            // 授权必须等用户登录后从菜单栏「需要授权…」完成，那里 LAContext 可用。
+            // 这里只负责把状态说清楚：刘海面板是登录窗口上我们唯一可见的表面。
             if KeychainTrust.needsAuthorization {
-                UnlockDiagnostics.log("  · 钥匙串 ACL 不认当前构建，先完成授权再扫描")
+                UnlockDiagnostics.log("  · 钥匙串 ACL 不认当前构建，本次不扫描；改为在刘海面板说明并引导登录后从菜单栏授权")
+                statusMessage = "Face ID 已更新，需要重新授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
                 if self.showsUI {
-                    NotchOverlayController.shared.arm { [weak self] in self?.startScanCycle() }
-                }
-                do {
-                    try await SecureCredentialManager.reauthorizeKeychain(
-                        reason: "Face ID 更新后需要重新确认钥匙串访问，才能读取解锁密码。请选择「始终允许」。"
+                    NotchOverlayController.shared.presentNotice(
+                        "Face ID 已更新，需要重新授权钥匙串访问。\n请登录后从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
                     )
-                } catch {
-                    UnlockDiagnostics.log("  · 钥匙串重新授权失败：\(error.localizedDescription)")
-                    self.statusMessage = "钥匙串授权未完成 —— 读不出解锁密码。请在系统弹窗里选择「始终允许」，或从菜单栏「需要授权…」重试。"
-                    return
                 }
-                UnlockDiagnostics.log("  · 钥匙串重新授权成功，继续扫描")
+                hasArmedForCurrentLock = false
+                return
             }
 
             await self.arm(autoScan: shouldAutoScan)
@@ -400,8 +399,13 @@ final class FaceUnlockCoordinator {
         // this whole path is meant to avoid. Point the user at the menu-bar item
         // instead of pretending to work.
         guard !KeychainTrust.needsAuthorization else {
-            UnlockDiagnostics.log("runScanCycle: 钥匙串 ACL 不认当前构建，本次不扫描（请从菜单栏「需要授权…」完成授权）")
-            statusMessage = "应用已更新，需要重新授权钥匙串访问 —— 请从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
+            UnlockDiagnostics.log("runScanCycle: 钥匙串 ACL 不认当前构建，本次不扫描（请登录后从菜单栏「需要授权…」完成授权）")
+            statusMessage = "Face ID 已更新，需要重新授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
+            if showsUI {
+                NotchOverlayController.shared.presentNotice(
+                    "需要重新授权钥匙串访问。\n请登录后从菜单栏「需要授权…」进入，选择「始终允许」。"
+                )
+            }
             return
         }
 

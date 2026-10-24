@@ -57,7 +57,7 @@ struct NotchOverlayView: View {
     private var targetIsExpanded: Bool {
         switch controller.phase {
         case .closed, .collapsing: return false
-        case .scanning, .success, .failure, .onboarding: return true
+        case .scanning, .success, .failure, .onboarding, .notice: return true
         }
     }
 
@@ -234,8 +234,7 @@ struct NotchOverlayView: View {
     /// whole panel — hence passing it into `MinimalUnlockView` rather than wrapping `Group`.
     @ViewBuilder
     private var scanContent: some View {
-        if let appLockContent {
-            AppLockContentView(
+        if let appLockContent {            AppLockContentView(
                 content: appLockContent,
                 // The notch's flare eats `topRadius` before any real black starts.
                 edgeInset: NotchGeometry.minimalContentEdgeInset
@@ -250,6 +249,13 @@ struct NotchOverlayView: View {
                 pulseScale: scanPulseScale,
                 pulseOpacity: scanPulseOpacity
             )
+        } else if case .notice(let text) = controller.content {
+            // Plain text, no video and no lock glyph: this panel is the only surface
+            // of ours visible on the login window, so it is where a "you have to do X
+            // once you're logged in" message has to live.
+            NoticeView(text: text)
+                .padding(.horizontal, NotchGeometry.minimalContentEdgeInset)
+                .padding(.vertical, 10)
         } else if isMinimalScan {
             MinimalUnlockView(
                 media: controller.media,
@@ -444,7 +450,7 @@ struct NotchOverlayView: View {
         case .collapsing:
             // Hold whatever it currently is — re-locking now would read as undoing the unlock.
             return
-        case .closed, .scanning, .failure, .onboarding:
+        case .closed, .scanning, .failure, .onboarding, .notice:
             shouldOpen = false
         }
 

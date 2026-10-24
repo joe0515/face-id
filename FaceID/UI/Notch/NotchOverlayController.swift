@@ -34,6 +34,11 @@ final class NotchOverlayController {
         /// Hosting the multi-step onboarding flow, driven by the hosted
         /// OnboardingController rather than this controller's own machinery.
         case onboarding
+        /// Showing a short message instead of a scan — e.g. "the keychain needs
+        /// re-authorizing, do it from the menu bar once you're logged in".
+        /// Exists so the lock screen can explain itself without any interactive
+        /// surface: on the login window nothing else of ours is visible.
+        case notice(String)
     }
 
     /// Kept as one enum (rather than two independent optionals) so exactly one is ever active.
@@ -44,12 +49,15 @@ final class NotchOverlayController {
         /// so resolving an attempt swaps the video without evicting the icon and
         /// name that identify which app is being unlocked.
         case appLock(AppLockContent)
+        /// A plain message — see `Phase.notice`.
+        case notice(String)
 
         static func == (lhs: Content, rhs: Content) -> Bool {
             switch (lhs, rhs) {
             case (.scan(let a), .scan(let b)): return a == b
             case (.onboarding(let a), .onboarding(let b)): return a === b
             case (.appLock(let a), .appLock(let b)): return a == b
+            case (.notice(let a), .notice(let b)): return a == b
             default: return false
             }
         }
@@ -63,7 +71,7 @@ final class NotchOverlayController {
         switch content {
         case .scan(let media): return media
         case .appLock(let appLock): return appLock.media
-        case .onboarding: return .idle
+        case .onboarding, .notice: return .idle
         }
     }
     private(set) var geometry: NotchGeometry = .forMainScreen()
@@ -162,9 +170,34 @@ final class NotchOverlayController {
         }
     }
 
-    /// Truly hides the window. Only call once the lock-screen attempt is
-    /// completely done — while armed, resolving an attempt goes back to `.closed`, not this.
+    /// Shows a plain message on the panel — no scanning, no video, nothing to click.
     ///
+    /// Used when the unlock path can't proceed and the reason is something the user
+    /// must act on **away from the lock screen** (a keychain re-authorization, say).
+    /// On the login window this panel is the only surface of ours that is visible at
+    /// all, so "do nothing" would read as a broken feature; a sentence reads as a
+    /// state. Collapses after `noticeHoldDuration`.
+    func presentNotice(_ text: String) {
+        isArmed = false
+        onActivate = nil
+        isPillDocked = false
+        geometry = windowController.currentGeometry
+        content = .notice(text)
+        phase = .notice(text)
+        windowController.show()
+        hasPrimedWindow = true
+        updateInteractivity()
+
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(FIDConstants.noticeHoldDuration))
+            guard let self, !Task.isCancelled, !self.isArmed else { return }
+            await self.collapse()
+        }
+    }
+
+    /// Truly hides the window. Only call once the lock-screen attempt is
+    /// completely done — while armed, resolving an attempt goes back to `.closed`, not this.    ///
     /// If a success/collapse sequence is already resolving, let it finish
     /// naturally: setting `isArmed = false` is enough, since the already-scheduled
     /// `collapse()` checks `isArmed` once its hold expires and hides for real then.
@@ -374,13 +407,14 @@ final class NotchOverlayController {
     ///
     /// - `.appLock`: keeps its identity, swaps only the video.
     /// - `.onboarding`: returned untouched — onboarding owns the panel and its content.
+    /// - `.notice`: returned untouched — a notice has no video to swap.
     /// - `.scan`: becomes the given media.
     static func content(_ content: Content, withMedia media: ScanMedia) -> Content {
         switch content {
         case .appLock(var appLock):
             appLock.media = media
             return .appLock(appLock)
-        case .onboarding:
+        case .onboarding, .notice:
             return content
         case .scan:
             return .scan(media)
@@ -423,7 +457,7 @@ final class NotchOverlayController {
         // unreachable rather than merely less convenient.
         guard FIDSettings.shared.retryOnHover || hasAppLockContent else { return }
         switch phase {
-        case .closed, .failure:
+        case .closed, .failure, .notice:
             guard let onActivate else {
                 if phase == .failure { Task { await collapse() } }
                 return
@@ -480,6 +514,17 @@ final class NotchOverlayController {
         setScanMedia(.idle)
         isPillDocked = false
         windowController.setInteractive(false)
+        windowController.hide()
+    }
+
+    /// Drops a `notice` (its hold timer is still pending, or the machine just got
+    /// unlocked). No-op for every other phase.
+    func dismissNotice() {
+        guard case .notice = phase else { return }
+        scanTimeoutTask?.cancel(); scanTimeoutTask = nil
+        phase = .closed
+        setScanMedia(.idle)
+        isPillDocked = false
         windowController.hide()
     }
 

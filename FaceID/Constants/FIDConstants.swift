@@ -215,6 +215,12 @@ nonisolated enum FIDConstants {
     /// 遮罩面板相对目标窗口的外扩量（点），保留窗口自身阴影边缘。
     static let shieldPanelOutset: CGFloat = 0
 
+    /// 刘海面板显示一条纯文字说明（`.notice`）后自动收起的时长（秒）。
+    ///
+    /// 这类说明出现在用户**此刻无法处理**的事情上（例如「应用更新了，请登录后从
+    /// 菜单栏重新授权钥匙串」），所以只求被读到，不求停留。
+    static let noticeHoldDuration: TimeInterval = 8
+
     /// 遮罩的暗化强度（0–1）。压在被模糊后的窗口内容之上。
     static let shieldDimOpacity: Double = 0.45
 
