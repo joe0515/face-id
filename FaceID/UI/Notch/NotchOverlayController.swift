@@ -146,6 +146,11 @@ final class NotchOverlayController {
     /// Arms the overlay for the lock-screen flow: shows the window and keeps it
     /// up until `disarm()`. `onActivate` restarts scanning on hover.
     func arm(onActivate: @escaping () -> Void) {
+        // Second line of defence behind `FaceUnlockCoordinator.isAttemptInFlight`:
+        // arming resets `phase` to `.closed`, so doing it while the success animation
+        // plays erases the one thing the user needs to see. A new attempt starts from a
+        // fully closed panel; until then, ignore it.
+        guard phase != .success, phase != .collapsing else { return }
         isArmed = true
         self.onActivate = onActivate
         geometry = windowController.currentGeometry
@@ -436,6 +441,14 @@ final class NotchOverlayController {
     func finish(success: Bool) {
         resolveTask?.cancel()
         scanTimeoutTask?.cancel()
+
+        // A result that nobody can see is worse than no result: the panel may have been
+        // hidden by the collapse of this very scan (its timeout can land a frame before
+        // the match does). Bring it back before setting the phase.
+        if !windowController.isVisible {
+            windowController.show()
+            hasPrimedWindow = true
+        }
 
         // Unlock Animation → None just skips the success/failure video; phase and
         // retry behavior are unaffected. Reads the cycle's captured style, not live settings.

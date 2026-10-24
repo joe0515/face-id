@@ -267,8 +267,21 @@ final class FaceUnlockCoordinator {
     /// Whether an unlock attempt is genuinely still occupying the camera or the
     /// overlay. See `evaluateTrigger` — this is what `hasArmedForCurrentLock` is
     /// allowed to suppress.
+    ///
+    /// The panel phases are part of the answer, not just the tasks: after a successful
+    /// unlock `scanTask` is already nil (the disarm path cancels it) while the success
+    /// animation is still playing. Judging by tasks alone let the next wake notification
+    /// re-arm inside that 1.7 s window, resetting the panel to `.closed` — the success
+    /// animation vanished, but only sometimes, depending on whether a stray notification
+    /// arrived.
     private var isAttemptInFlight: Bool {
-        scanTask != nil || autoRetryTask != nil || NotchOverlayController.shared.phase == .scanning
+        if scanTask != nil || autoRetryTask != nil { return true }
+        switch NotchOverlayController.shared.phase {
+        case .scanning, .success, .failure, .collapsing:
+            return true
+        case .closed, .onboarding, .notice:
+            return false
+        }
     }
 
     /// Whether the last arm was recent enough to be part of the same wake burst rather than a new one.
