@@ -90,20 +90,25 @@ final class POCController {
     /// buffer before returning. When `requireAuthoritativeLock` is true (the
     /// auto-trigger path), refuses to inject unless the CGSession dictionary
     /// confirms the screen is actually locked.
-    func injectStoredPassword(requireAuthoritativeLock: Bool = false) async {
+    ///
+    /// - Returns: whether the keystrokes were actually posted. The caller shows the
+    ///   success animation **before** calling this (injecting is what unlocks the Mac,
+    ///   which tears the panel down), so it needs to know when to walk that back.
+    @discardableResult
+    func injectStoredPassword(requireAuthoritativeLock: Bool = false) async -> Bool {
         guard KeystrokeInjector.isAccessibilityTrusted() else {
             statusMessage = "未获得辅助功能权限 —— 请在系统设置中启用 Face ID。"
-            return
+            return false
         }
         guard SecureCredentialManager.isSessionUnlocked else {
             statusMessage = "会话已锁定 —— 请先用触控 ID 验证。"
-            return
+            return false
         }
 
         if requireAuthoritativeLock {
             guard LockMonitor.isScreenActuallyLocked() else {
                 statusMessage = "已跳过：CGSession 报告屏幕并未真正锁定。"
-                return
+                return false
             }
         }
 
@@ -114,7 +119,7 @@ final class POCController {
         guard !KeychainTrust.needsAuthorization else {
             UnlockDiagnostics.log("injectStoredPassword: 钥匙串尚未对本构建授权，拒绝读取（避免扫脸后弹出无法输入的密码框）")
             statusMessage = "需要先授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」完成，选择「始终允许」。"
-            return
+            return false
         }
 
         statusMessage = "正在输入…"
@@ -125,8 +130,10 @@ final class POCController {
                 try KeystrokeInjector.typeAndReturn(bytes)
             }.value
             statusMessage = "已在 \(Date().formatted(date: .omitted, time: .standard)) 输入存储的密码并回车"
+            return true
         } catch {
             statusMessage = "输入失败：\(error.localizedDescription)"
+            return false
         }
     }
 }

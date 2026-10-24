@@ -438,9 +438,20 @@ final class FaceUnlockCoordinator {
 
         switch outcome {
         case .matched:
-            // The unlock already happened inside observeScanWindow — this only decides whether anything is shown about it.
+            // Nothing to do: the success animation was started inside
+            // `observeScanWindow`, *before* the password was injected. Injecting unlocks the
+            // Mac, which lands here as "screen is no longer locked" → `disarmOverlay()` →
+            // the panel is gone. Calling `finish` at this point was always too late, so the
+            // user only ever saw the scanning animation stop.
+            break
+        case .injectionFailed:
+            statusMessage = "已识别，但无法注入解锁密码 —— 检查辅助功能权限与钥匙串授权。"
             if showsUI {
-                NotchOverlayController.shared.finish(success: true)
+                // `finish(success: false)` already ran inside `observeScanWindow`; this
+                // only gives hover-to-retry the same lifetime a plain failure gets.
+                scheduleAutoRetryIfEnabled(after: NotchOverlayController.shared.failureHoldDuration)
+            } else {
+                scheduleAutoRetryIfEnabled(after: headlessRetryDelay)
             }
         case .consistentlyWrongFace:
             statusMessage = "未能识别。"
@@ -491,6 +502,9 @@ final class FaceUnlockCoordinator {
 
     private enum ScanOutcome {
         case matched
+        /// A face matched but the password could not be injected — the success animation
+        /// was already started, so it is walked back to the failure frame.
+        case injectionFailed
         case consistentlyWrongFace
         /// A deny cue (glare, device rectangle) fired — actively rejected as a spoof regardless of match. Same failure path as `.consistentlyWrongFace`.
         case spoofSuspected
@@ -624,7 +638,26 @@ final class FaceUnlockCoordinator {
                     ? (confirmingCue.map { "活体：\($0.title)" } ?? "活体通过")
                     : "活体检测已关闭"
                 lastOutcome = "匹配 \(readyMatch.identity.name)，相似度 \(String(format: "%.3f", readyMatch.centroidSimilarity))，\(livenessNote)。"
-                await pocController.injectStoredPassword(requireAuthoritativeLock: true)
+
+                // 成功动画必须**先于**注入开始。
+                //
+                // 注入密码会让系统立刻解锁，而我们监听「屏幕已解锁」并据此 `disarmOverlay()`
+                // 收起面板。等注入返回再调 `finish(success:)`，面板已经没了 —— 现场表现就是
+                // 「只有识别中的动画，没有成功的动画」。`disarm()` 对 `.success` 有保护，所以
+                // 先播动画反而能让它活到播完。
+                if requireOverlayScanning {
+                    NotchOverlayController.shared.finish(success: true)
+                }
+
+                let injected = await pocController.injectStoredPassword(requireAuthoritativeLock: true)
+                guard injected else {
+                    // The animation already claimed success; take it back rather than leave
+                    // the user looking at a checkmark over a Mac that never unlocked.
+                    if requireOverlayScanning {
+                        NotchOverlayController.shared.finish(success: false)
+                    }
+                    return .injectionFailed
+                }
                 return .matched
             }
 
