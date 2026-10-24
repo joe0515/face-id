@@ -120,17 +120,14 @@ struct PermissionReviewStepView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 4)
 
+            // 「辅助功能」在系统设置里是**同一个列表、同一个勾选框**，却对应 TCC 的两个
+            // 独立授权项。分成两行会让用户以为要授权两次（也确实会连点两次「授权」），
+            // 所以这里合并成一行：点一次请求缺失的那一项，状态文案说清还缺什么。
             PermissionRow(
-                title: "读取其他应用的窗口",
-                detail: "应用加锁要把遮罩贴在窗口上",
-                granted: controller.accessibilityPrivileges.canReadWindows
-            ) { controller.grantAccessibility() }
-
-            PermissionRow(
-                title: "发送按键事件",
-                detail: "系统设置 › 隐私与安全性 › 辅助功能",
-                granted: controller.accessibilityPrivileges.canPostEvents
-            ) { controller.grantPostEventAccess() }
+                title: "辅助功能",
+                detail: controller.accessibilityDetail,
+                granted: controller.accessibilityPrivileges.isFullyGranted
+            ) { controller.grantMissingAccessibility() }
 
             // Not a TCC grant: the keychain items were written by an earlier build, and
             // an ad-hoc signature's identity (its cdhash) changes on every rebuild. The

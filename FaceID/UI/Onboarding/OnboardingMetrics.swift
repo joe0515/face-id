@@ -51,8 +51,13 @@ enum OnboardingMetrics {
     /// The value is the **taller** of the two states so `maxPanelHeight(for:)` sizes the
     /// window envelope from it; `permissionReviewPanelSize` subtracts the caption when
     /// it isn't on screen.
-    static let notchPermissionReviewHeight: CGFloat = 446
-    static let pillPermissionReviewHeight: CGFloat = 424
+    ///
+    /// Re-measured 2026-10-24 after the two Accessibility rows were merged into one
+    /// (they are a single checkbox in System Settings): three rows, rendered at
+    /// `panelWidth` with `ImageRenderer` — notch 354 / pill 332 without the caption,
+    /// and +38 with it.
+    static let notchPermissionReviewHeight: CGFloat = 392
+    static let pillPermissionReviewHeight: CGFloat = 370
     /// The caption line plus the stack spacing it introduces — 38 in both styles.
     static let permissionReviewHintHeight: CGFloat = 38
 

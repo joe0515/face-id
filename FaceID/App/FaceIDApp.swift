@@ -110,8 +110,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            SecureCredentialManager.hasStoredPassword(),
            !SecureCredentialManager.isSessionUnlocked {
             Task { @MainActor in
-                // 让启动期的权限面板/状态栏先就位，避免验证弹窗和它们抢焦点。
-                try? await Task.sleep(for: .seconds(1.5))
+                if PermissionGate.needsAttention {
+                    // 启动期的权限引导此刻正显示在刘海面板上。两个都需要用户操作的窗口
+                    // 同时弹出会互相遮挡（面板 + 系统 Touch ID 框），用户看到的就是
+                    // 「授权窗口一起弹出」。等面板被处理完再补这一次会话解锁。
+                    let deadline = Date().addingTimeInterval(120)
+                    while Date() < deadline,
+                          NotchOverlayController.shared.phase == .onboarding {
+                        try? await Task.sleep(for: .seconds(0.5))
+                    }
+                } else {
+                    // 让启动期的状态栏先就位，避免验证弹窗和它抢焦点。
+                    try? await Task.sleep(for: .seconds(1.5))
+                }
                 await environment.pocController.unlockSession()
             }
         }

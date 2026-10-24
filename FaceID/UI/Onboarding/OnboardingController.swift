@@ -872,6 +872,28 @@ final class OnboardingController {
         refreshPermissions()
     }
 
+    /// Requests whichever Accessibility privilege is still missing — the two live in one
+    /// System Settings list (one checkbox), so the merged row asks for exactly the half
+    /// that isn't granted yet. Asking for both at once would put up a dialog the user
+    /// has already satisfied.
+    func grantMissingAccessibility() {
+        if accessibilityPrivileges.canReadWindows, !accessibilityPrivileges.canPostEvents {
+            grantPostEventAccess()
+        } else {
+            grantAccessibility()
+        }
+    }
+
+    /// The merged Accessibility row's status line: which half is still missing, or where
+    /// the single checkbox lives once both are granted.
+    var accessibilityDetail: String {
+        let p = accessibilityPrivileges
+        if p.isFullyGranted { return "系统设置 › 隐私与安全性 › 辅助功能" }
+        if p.canReadWindows { return "还缺：发送按键事件" }
+        if p.canPostEvents { return "还缺：读取其他应用的窗口" }
+        return "读取窗口 + 发送按键事件"
+    }
+
     // MARK: - Keychain authorization
 
     /// The review has exactly one caption slot; either source can fill it, so the panel
