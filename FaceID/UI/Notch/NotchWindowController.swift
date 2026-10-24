@@ -109,6 +109,16 @@ final class NotchWindowController {
         window.makeKey()
     }
 
+    /// Gives key back to whoever wants it — used right before a **system-owned** prompt
+    /// (SecurityAgent's keychain dialog, TCC's authorization alert) is about to appear.
+    ///
+    /// Those dialogs belong to another process. While our panel holds key, they are drawn
+    /// but keystrokes still go to us: the password field is visible and inert. That is
+    /// precisely the "密码框弹出，但打不了字" report.
+    func relinquishKey() {
+        window?.resignKey()
+    }
+
     /// Forwarded from `NotchOverlayView` every time the visible panel's frame changes.
     func setInteractiveContentRect(_ rect: CGRect?) {
         interactiveContentRect = rect

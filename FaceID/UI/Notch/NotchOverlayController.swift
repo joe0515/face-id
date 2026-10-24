@@ -170,6 +170,15 @@ final class NotchOverlayController {
         }
     }
 
+    /// Gives up key and frontmost status so a **system-owned** prompt can take the
+    /// keyboard — see `NotchWindowController.relinquishKey`.
+    ///
+    /// Called before the keychain ACL dialog. Without it that dialog is visible but
+    /// unresponsive, which reads as a hang rather than as a question.
+    func relinquishKeyForSystemPrompt() {
+        windowController.relinquishKey()
+    }
+
     /// Shows a plain message on the panel — no scanning, no video, nothing to click.
     ///
     /// Used when the unlock path can't proceed and the reason is something the user

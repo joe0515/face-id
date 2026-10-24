@@ -107,6 +107,16 @@ final class POCController {
             }
         }
 
+        // 读密码走的是钥匙串里**另一个**条目，它的 ACL 与本构建的 cdhash 未必匹配。
+        // 一旦在这里读，系统会当场弹「想要使用你储存在钥匙串的…」并要求输入登录密码
+        // —— 而它出现在扫脸成功之后，且我们持有 key window 时那个框可能收不到键盘
+        // （现场表现：密码框弹出，但打不了字）。所以宁可这次不注入，也不能把它弹出来。
+        guard !KeychainTrust.needsAuthorization else {
+            UnlockDiagnostics.log("injectStoredPassword: 钥匙串尚未对本构建授权，拒绝读取（避免扫脸后弹出无法输入的密码框）")
+            statusMessage = "需要先授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」完成，选择「始终允许」。"
+            return
+        }
+
         statusMessage = "正在输入…"
         do {
             try await Task.detached(priority: .userInitiated) {

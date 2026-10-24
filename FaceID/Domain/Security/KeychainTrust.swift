@@ -26,7 +26,11 @@ enum KeychainTrust {
 
     // 显式 nonisolated：项目默认 MainActor 隔离，enum 的 static let 也会被带上，
     // 而下面几个方法都是 nonisolated 的（钥匙串读写本来就不在主线程）。
-    private nonisolated static let defaultsKey = "FID.settings.keychainAuthorizedBuild"
+    //
+    // `.v2`：v1 的记录是在**只读完会话密钥**时就写下的，而密码数据是钥匙串里另一个
+    // 独立条目、ACL 各自认 cdhash —— 于是 v1 会把「密码还没授权」误报成已授权，扫脸
+    // 成功、要注入密码时才被系统对话框突袭。换 key 让那些误报的记录一律作废。
+    private nonisolated static let defaultsKey = "FID.settings.keychainAuthorizedBuild.v2"
 
     /// The current binary's cdhash — the identity an ad-hoc ACL entry actually records.
     ///
@@ -73,8 +77,12 @@ enum KeychainTrust {
         return lastAuthorizedFingerprint != current
     }
 
-    /// Records the current build as trusted. Only meaningful after a real read succeeded —
-    /// a dialog the user cancelled leaves the ACL untouched.
+    /// Records the current build as trusted. Only meaningful after **both** keychain
+    /// items have actually been read — see `SecureCredentialManager.reauthorizeKeychain`.
+    ///
+    /// The session key and the password blob are separate items with separate ACLs, so a
+    /// successful read of one proves nothing about the other. Marking on the first read
+    /// is exactly what let the password prompt ambush a face scan.
     nonisolated static func markAuthorized() {
         guard let current = currentBuildFingerprint else { return }
         UserDefaults.standard.set(current, forKey: defaultsKey)

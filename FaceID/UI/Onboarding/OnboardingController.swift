@@ -937,6 +937,10 @@ final class OnboardingController {
         guard !isGrantingKeychain else { return }
         isGrantingKeychain = true
         keychainError = nil
+        // 系统钥匙串对话框属于 SecurityAgent 进程。我们此刻是 active app 且刘海面板
+        // 持有 key —— 那个框会显示出来却收不到键盘（现场表现：密码框打不了字）。
+        // 先交还 key，再触发这次读取。
+        NotchOverlayController.shared.relinquishKeyForSystemPrompt()
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {

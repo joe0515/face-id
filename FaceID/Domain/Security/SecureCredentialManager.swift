@@ -43,7 +43,33 @@ extension Notification.Name {
 
 enum SecureCredentialManager {
     nonisolated private static let sessionKeyAccount = "sessionKey"
+    /// Legacy location. Kept only so an existing install can migrate off it — see
+    /// `passwordFileURL`.
     nonisolated private static let passwordBlobAccount = "encryptedPassword"
+
+    /// Where the encrypted password lives.
+    ///
+    /// **Deliberately not a keychain item.** Every keychain item carries its own ACL,
+    /// keyed for an ad-hoc build to the cdhash — so a second item means a second
+    /// authorization dialog, and this one landed on the *unlock* path: after a successful
+    /// face match, when the user expects the Mac to open. Worse, that dialog's password
+    /// field cannot take keystrokes while our notch panel holds key, so it presented as a
+    /// hang.
+    ///
+    /// A file is the same security level: the contents are ciphertext under the session
+    /// key, which stays in the keychain (it is the one secret that must never sit in a
+    /// plain file). One gate instead of two, and none of them on the unlock path.
+    nonisolated private static var passwordFileURL: URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return base.appendingPathComponent("Face ID", isDirectory: true).appendingPathComponent("credential.enc")
+    }
+
+    nonisolated private static var hasPasswordFile: Bool {
+        guard let url = passwordFileURL else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
 
     // MARK: - Session state (thread-safe via NSLock)
 
@@ -172,7 +198,7 @@ enum SecureCredentialManager {
     // MARK: - Public API
 
     nonisolated static func hasStoredPassword() -> Bool {
-        KeychainManager.exists(account: passwordBlobAccount)
+        hasPasswordFile || KeychainManager.exists(account: passwordBlobAccount)
     }
 
     /// Prompts for identity and unwraps the session key, creating it on first run.
@@ -190,6 +216,7 @@ enum SecureCredentialManager {
         if KeychainManager.exists(account: sessionKeyAccount) {
             let data = try await readSessionKey(reason: reason)
             setCachedKey(SymmetricKey(data: data))
+            migratePasswordToFileIfNeeded()
             return
         }
 
@@ -226,9 +253,31 @@ enum SecureCredentialManager {
         }
     }
 
+    /// Moves a password stored by an earlier build out of the keychain, so the unlock
+    /// path never has to read a second ACL-protected item again.
+    ///
+    /// Runs from `unlockSession` — i.e. while the user is logged in and the desktop can
+    /// actually accept the keystrokes of an ACL dialog. If it fails (user cancelled), the
+    /// build is **not** marked authorized, which keeps `KeychainTrust.needsAuthorization`
+    /// true and stops the scan path from reading the old item behind the user's back.
+    nonisolated private static func migratePasswordToFileIfNeeded() {
+        guard !hasPasswordFile, KeychainManager.exists(account: passwordBlobAccount) else {
+            KeychainTrust.markAuthorized()
+            return
+        }
+        do {
+            let ciphertext = try KeychainManager.read(account: passwordBlobAccount)
+            try writePasswordCiphertext(ciphertext)
+            try? KeychainManager.delete(account: passwordBlobAccount)
+        } catch {
+            // Retried on the next unlock / keychain authorization.
+            return
+        }
+        KeychainTrust.markAuthorized()
+    }
+
     /// Reads the key back at whichever rung it was stored.
-    nonisolated private static func readSessionKey(reason: String) async throws -> Data {
-        let data: Data
+    nonisolated private static func readSessionKey(reason: String) async throws -> Data {        let data: Data
         switch SessionKeyProtection.stored {
         case .keychainGated:
             let context = LAContext()
@@ -240,9 +289,10 @@ enum SecureCredentialManager {
             try await requireUserPresence(reason: reason)
             data = try KeychainManager.read(account: sessionKeyAccount)
         }
-        // Only a read that actually returned data proves this build is on the item's
-        // ACL — see `KeychainTrust`.
-        KeychainTrust.markAuthorized()
+        // Deliberately **no** `KeychainTrust.markAuthorized()` here. This reads one of the
+        // two keychain items; the other (the password blob) has its own ACL and is often
+        // still unauthorized. Marking on this read is what made the password prompt
+        // appear mid-scan instead of at the moment the user chose.
         return data
     }
 
@@ -256,15 +306,17 @@ enum SecureCredentialManager {
     /// authorization that only covers the key leaves the read on the unlock path to
     /// spring the very dialog this method exists to pre-empt. That is where the
     /// "two prompts in a row" report came from.
+    ///
+    /// The build is marked authorized only after **both** reads succeed. That mark is
+    /// what `KeychainTrust.needsAuthorization` consults, so it must mean "the unlock
+    /// path can read everything it needs", not "one item was reachable".
     nonisolated static func reauthorizeKeychain(reason: String) async throws {
         guard KeychainManager.exists(account: sessionKeyAccount) else {
             throw SecureCredentialError.sessionKeyUnavailable
         }
         let data = try await readSessionKey(reason: reason)
         setCachedKey(SymmetricKey(data: data))
-        if KeychainManager.exists(account: passwordBlobAccount) {
-            _ = try readPassword()
-        }
+        migratePasswordToFileIfNeeded()
     }
 
     /// Asks for Touch ID — or the login password where there's no biometric hardware.
@@ -288,7 +340,7 @@ enum SecureCredentialManager {
 
     /// Checked without needing the key itself, so this stays answerable precisely when the key can't be read.
     nonisolated static var hasSessionEncryptedData: Bool {
-        KeychainManager.exists(account: passwordBlobAccount) || SecureFaceStore.exists
+        hasPasswordFile || KeychainManager.exists(account: passwordBlobAccount) || SecureFaceStore.exists
     }
 
     /// Clears the cached session key. Next save/read requires Touch ID again.
@@ -301,14 +353,33 @@ enum SecureCredentialManager {
     nonisolated static func savePassword(_ passwordBytes: Data) throws {
         guard !passwordBytes.isEmpty else { throw SecureCredentialError.emptyPassword }
         let combined = try encrypt(passwordBytes)
-        try KeychainManager.save(account: passwordBlobAccount, data: combined)
+        try writePasswordCiphertext(combined)
+        // The legacy item would otherwise keep a stale copy and, worse, keep demanding
+        // its own ACL authorization. Failing to delete it is harmless — reads prefer the file.
+        try? KeychainManager.delete(account: passwordBlobAccount)
+    }
+
+    nonisolated private static func writePasswordCiphertext(_ combined: Data) throws {
+        guard let url = passwordFileURL else { throw SecureCredentialError.encryptionFailed }
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try combined.write(to: url, options: .atomic)
     }
 
     /// No separate Touch ID prompt — only the session key was gated, at unlock time. Caller MUST zero the returned bytes via
     /// `.resetBytes(in:)` after use. Blocking; call from a background task.
+    ///
+    /// Reads the file first. The keychain fallback exists only for installs that stored the
+    /// password before it moved — and that path is the one that can raise an ACL dialog, so
+    /// `reauthorizeKeychain` migrates the ciphertext across the first time it is authorized.
     nonisolated static func readPassword() throws -> Data {
         guard cachedKey() != nil else { throw SecureCredentialError.sessionLocked }
-        let ciphertext = try KeychainManager.read(account: passwordBlobAccount)
+        let ciphertext: Data
+        if let url = passwordFileURL, FileManager.default.fileExists(atPath: url.path) {
+            ciphertext = try Data(contentsOf: url)
+        } else {
+            ciphertext = try KeychainManager.read(account: passwordBlobAccount)
+        }
         let plaintext = try decrypt(ciphertext)
         // Only on success: a failed read shouldn't extend the idle window.
         recordActivity()
@@ -317,6 +388,9 @@ enum SecureCredentialManager {
 
     /// Deletes both Keychain items and clears the cached session key.
     nonisolated static func deletePassword() throws {
+        if let url = passwordFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
         try KeychainManager.delete(account: passwordBlobAccount)
         try KeychainManager.delete(account: sessionKeyAccount)
         setCachedKey(nil)
