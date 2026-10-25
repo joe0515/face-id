@@ -79,10 +79,23 @@ struct AboutSettingsPage: View {
             SettingsGroupDivider()
 
             SettingsActionRowContent(
+                title: "GitHub 项目主页",
+                subtitle: "joe0515/face-id",
+                buttonTitle: "打开"
+            ) {
+                if let url = URL(string: "https://github.com/joe0515/face-id") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+
+            SettingsGroupDivider()
+
+            SettingsActionRowContent(
                 title: "发送反馈",
+                subtitle: "在 GitHub 上提交问题",
                 buttonTitle: "发送"
             ) {
-                if let url = URL(string: "https://faceid.example.com/feedback") {
+                if let url = URL(string: "https://github.com/joe0515/face-id/issues") {
                     NSWorkspace.shared.open(url)
                 }
             }

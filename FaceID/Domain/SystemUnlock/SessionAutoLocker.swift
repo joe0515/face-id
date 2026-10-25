@@ -13,8 +13,9 @@ final class SessionAutoLocker {
     private let pocController: POCController
     private var timer: Timer?
 
-    /// Coarse on purpose — the shortest selectable limit is a full day, and the decision compares timestamps, not ticks.
-    private let checkInterval: TimeInterval = 5 * 60
+    /// Fine enough that the shortest selectable limit (1 minute) locks within a
+    /// reasonable margin, but not so tight it spins the run loop.
+    private let checkInterval: TimeInterval = 30
 
     init(pocController: POCController) {
         self.pocController = pocController
@@ -25,7 +26,8 @@ final class SessionAutoLocker {
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
 
-        // Also evaluate on wake: no timer fires during sleep, but the elapsed time still counts as idle once compared.
+        // Re-evaluate on wake: no timer fires during sleep, but the elapsed time
+        // still counts as idle once compared.
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -34,11 +36,27 @@ final class SessionAutoLocker {
             Task { @MainActor [weak self] in self?.evaluate() }
         }
 
+        // Treat returning to the app as activity so an actively-used session
+        // doesn't auto-lock mid-edit; only time spent away from the app ages it.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.touchActivity() }
+        }
+
         evaluate()
     }
 
     deinit {
         timer?.invalidate()
+    }
+
+    /// Bumps the idle timestamp so active use extends the session — see the
+    /// `didBecomeActiveNotification` observer above.
+    private func touchActivity() {
+        SecureCredentialManager.touchActivity()
     }
 
     /// Routed through `POCController.lockSession()` rather than `SecureCredentialManager` directly, so the Settings UI's

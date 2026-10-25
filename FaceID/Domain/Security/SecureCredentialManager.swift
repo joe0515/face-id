@@ -114,6 +114,13 @@ enum SecureCredentialManager {
         sessionLock.unlock()
     }
 
+    /// Public entry point for `SessionAutoLocker` to refresh the idle timestamp
+    /// when the user returns to the app — keeps an actively-used session from
+    /// auto-locking mid-use. No-op while the session is locked.
+    nonisolated static func touchActivity() {
+        recordActivity()
+    }
+
     // MARK: - Generic session-key crypto (shared by passwords here and face embeddings in SecureFaceStore; requires an unlocked session)
 
     nonisolated static func encrypt(_ plaintext: Data) throws -> Data {

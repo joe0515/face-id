@@ -10,26 +10,42 @@ import Foundation
 import Observation
 
 /// How long the Touch-ID-unlocked session may sit idle before it re-locks.
+/// Expressed in minutes — short enough to protect the Settings UI if the user
+/// walks away without manually locking (see `SessionAutoLocker`).
 enum AutoLockInterval: Int, CaseIterable, Identifiable {
-    case oneDay = 1
-    case sevenDays = 7
-    case fourteenDays = 14
-    case thirtyDays = 30
+    case oneMinute = 1
+    case threeMinutes = 3
+    case fiveMinutes = 5
+    case tenMinutes = 10
+    case fifteenMinutes = 15
+    case thirtyMinutes = 30
+    case oneHour = 60
+    case never = 0
 
     var id: Int { rawValue }
 
-    var title: String { rawValue == 1 ? "1 天" : "\(rawValue) 天" }
+    var title: String {
+        switch self {
+        case .never: return "永不"
+        case .oneMinute: return "1 分钟"
+        default: return "\(rawValue) 分钟"
+        }
+    }
 
-    var duration: TimeInterval { TimeInterval(rawValue) * 24 * 60 * 60 }
+    /// Idle allowance in seconds. `.never` is treated as "no expiry" by
+    /// `SessionAutoLocker` (the comparison can never reach it).
+    var duration: TimeInterval {
+        self == .never ? .greatestFiniteMagnitude : TimeInterval(rawValue) * 60
+    }
 
-    /// Position in `allCases`, used to drive the discrete 4-stop slider.
+    /// Position in `allCases`, used to drive the discrete slider.
     var sliderIndex: Double {
         Double(Self.allCases.firstIndex(of: self) ?? 0)
     }
 
     static func from(sliderIndex: Double) -> AutoLockInterval {
         let clamped = Int(sliderIndex.rounded())
-        return allCases.indices.contains(clamped) ? allCases[clamped] : .sevenDays
+        return allCases.indices.contains(clamped) ? allCases[clamped] : .threeMinutes
     }
 }
 
@@ -106,7 +122,8 @@ final class FIDSettings {
         static let hapticFeedbackEnabled = "FID.settings.hapticFeedbackEnabled"
         static let preferredDisplayID = "FID.settings.preferredDisplayID"
         static let preferredDisplayName = "FID.settings.preferredDisplayName"
-        static let autoLockIntervalDays = "FID.settings.autoLockIntervalDays"
+        static let autoLockInterval = "FID.settings.autoLockInterval"
+        static let automaticallyChecksForUpdates = "FID.settings.automaticallyChecksForUpdates"
         static let defaultCameraID = "FID.settings.defaultCameraID"
         static let builtInDisplayCameraID = "FID.settings.builtInDisplayCameraID"
         static let externalDisplayCameraID = "FID.settings.externalDisplayCameraID"
@@ -213,9 +230,14 @@ final class FIDSettings {
         didSet { defaults.set(preferredDisplayName, forKey: Key.preferredDisplayName) }
     }
     /// Enforced by `SessionAutoLocker`, not here — this is only the stored
-    /// preference.
+    /// preference. Default 3 minutes so a forgotten-unlock Settings session
+    /// can't be left open indefinitely for someone else to tamper with.
     var autoLockInterval: AutoLockInterval {
-        didSet { defaults.set(autoLockInterval.rawValue, forKey: Key.autoLockIntervalDays) }
+        didSet { defaults.set(autoLockInterval.rawValue, forKey: Key.autoLockInterval) }
+    }
+    /// Drives `UpdaterController`'s background GitHub-release check.
+    var automaticallyChecksForUpdates: Bool {
+        didSet { defaults.set(automaticallyChecksForUpdates, forKey: Key.automaticallyChecksForUpdates) }
     }
     /// Device `uniqueID`s, not device objects — devices can disconnect/
     /// reconnect between launches, but their unique ID is stable.
@@ -313,10 +335,11 @@ final class FIDSettings {
         preferredDisplayID = defaults.string(forKey: Key.preferredDisplayID)
         preferredDisplayName = defaults.string(forKey: Key.preferredDisplayName)
 
-        // Defaults to 7 days — long enough not to nag daily users, short
-        // enough not to leave an abandoned session live indefinitely.
-        autoLockInterval = (defaults.object(forKey: Key.autoLockIntervalDays) as? Int)
-            .flatMap(AutoLockInterval.init(rawValue:)) ?? .sevenDays
+        // Defaults to 3 minutes — short enough that a forgotten-unlock session
+        // can't be left open for someone else to tamper with the Settings.
+        autoLockInterval = (defaults.object(forKey: Key.autoLockInterval) as? Int)
+            .flatMap(AutoLockInterval.init(rawValue:)) ?? .threeMinutes
+        automaticallyChecksForUpdates = defaults.object(forKey: Key.automaticallyChecksForUpdates) as? Bool ?? true
         defaultCameraID = defaults.string(forKey: Key.defaultCameraID)
         builtInDisplayCameraID = defaults.string(forKey: Key.builtInDisplayCameraID)
         externalDisplayCameraID = defaults.string(forKey: Key.externalDisplayCameraID)

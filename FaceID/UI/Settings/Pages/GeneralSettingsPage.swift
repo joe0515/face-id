@@ -8,10 +8,16 @@ import SwiftUI
 
 struct GeneralSettingsPage: View {
     @Bindable var coordinator: FaceUnlockCoordinator
+    @Bindable var pocController: POCController
     @Bindable private var settings = FIDSettings.shared
 
     @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
     @State private var launchAtLoginError: String?
+    /// Mirrors the lock gate on the Password / Locked-Apps pages: the General
+    /// page also protects its toggles behind the session lock, so nobody at an
+    /// unlocked Mac can flip them without re-authenticating.
+    @State private var isUnlocking = false
+    @State private var sessionError: String?
     /// Refreshed on `didChangeScreenParametersNotification` so the picker
     /// reflects displays connecting/disconnecting while Settings is open.
     @State private var screens: [NSScreen] = NSScreen.screens
@@ -54,115 +60,158 @@ struct GeneralSettingsPage: View {
         }
     }
 
+    private var isSessionUnlocked: Bool { pocController.isSessionUnlocked }
+
     var body: some View {
-        SettingsGroup {
-            SettingsRowContent(title: "登录时启动") {
-                FIDToggle(isOn: Binding(
-                    get: { launchAtLoginEnabled },
-                    set: { newValue in
-                        launchAtLoginEnabled = newValue
-                        do {
-                            try LaunchAtLogin.setEnabled(newValue)
-                            launchAtLoginError = nil
-                        } catch {
-                            launchAtLoginEnabled = !newValue
-                            launchAtLoginError = error.localizedDescription
+        ZStack(alignment: .top) {
+            lockedState
+                .opacity(isSessionUnlocked ? 0 : 1)
+                .allowsHitTesting(!isSessionUnlocked)
+                .accessibilityHidden(isSessionUnlocked)
+
+            content
+                .opacity(isSessionUnlocked ? 1 : 0)
+                .allowsHitTesting(isSessionUnlocked)
+                .accessibilityHidden(!isSessionUnlocked)
+        }
+        .animation(SettingsMetrics.stateTransitionAnimation, value: isSessionUnlocked)
+        .onAppear { pocController.refreshCredentialStatus() }
+        .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
+            guard newPhase == .closed else { return }
+            pocController.refreshCredentialStatus()
+        }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: SettingsMetrics.rowSpacing) {
+            SettingsGroup {
+                SettingsRowContent(title: "登录时启动") {
+                    FIDToggle(isOn: Binding(
+                        get: { launchAtLoginEnabled },
+                        set: { newValue in
+                            launchAtLoginEnabled = newValue
+                            do {
+                                try LaunchAtLogin.setEnabled(newValue)
+                                launchAtLoginError = nil
+                            } catch {
+                                launchAtLoginEnabled = !newValue
+                                launchAtLoginError = error.localizedDescription
+                            }
                         }
+                    ))
+                }
+                SettingsGroupDivider()
+                SettingsRowContent(title: "启用整机解锁") {
+                    FIDToggle(isOn: $coordinator.isEnabled)
+                }
+                SettingsGroupDivider()
+                UnlockTriggerPicker(selection: $settings.unlockTriggers, isEnabled: coordinator.isEnabled)
+                SettingsGroupDivider()
+                displayPicker()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                screens = NSScreen.screens
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
+            }
+            .onChange(of: settings.unlockTriggers) { oldValue, newValue in
+                // Only prompt on the transition into selecting "On space".
+                SpaceKeyMonitor.log.info("unlockTriggers changed: old=\(String(describing: oldValue), privacy: .public) new=\(String(describing: newValue), privacy: .public) state=\(String(describing: inputMonitoring), privacy: .public)")
+                if newValue.contains(.onSpace), !oldValue.contains(.onSpace), inputMonitoring != .granted {
+                    SpaceKeyMonitor.requestInputMonitoringAccess()
+                    // tccd flips notDetermined -> denied just after the call
+                    // returns, so re-read on the next beat rather than inline.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
                     }
-                ))
-            }
-            SettingsGroupDivider()
-            SettingsRowContent(title: "启用整机解锁") {
-                FIDToggle(isOn: $coordinator.isEnabled)
-            }
-            SettingsGroupDivider()
-            UnlockTriggerPicker(selection: $settings.unlockTriggers, isEnabled: coordinator.isEnabled)
-            SettingsGroupDivider()
-            displayPicker()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-            screens = NSScreen.screens
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
-        }
-        .onChange(of: settings.unlockTriggers) { oldValue, newValue in
-            // Only prompt on the transition into selecting "On space".
-            SpaceKeyMonitor.log.info("unlockTriggers changed: old=\(String(describing: oldValue), privacy: .public) new=\(String(describing: newValue), privacy: .public) state=\(String(describing: inputMonitoring), privacy: .public)")
-            if newValue.contains(.onSpace), !oldValue.contains(.onSpace), inputMonitoring != .granted {
-                SpaceKeyMonitor.requestInputMonitoringAccess()
-                // tccd flips notDetermined -> denied just after the call
-                // returns, so re-read on the next beat rather than inline.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
                 }
             }
-        }
-        if let launchAtLoginError {
-            SettingsCaption(text: launchAtLoginError)
-        }
-        if hasInheritedXcodePermission {
-            SettingsCaption(text: "当前从 Xcode 运行：权限判定会算在 Xcode 头上而不是 Face ID，所以这个读数没有意义。请单独打开 Face ID.app 查看真实状态。")
-        } else if needsInputMonitoring {
-            inputMonitoringNotice()
-        }
+            if let launchAtLoginError {
+                SettingsCaption(text: launchAtLoginError)
+            }
+            if hasInheritedXcodePermission {
+                SettingsCaption(text: "当前从 Xcode 运行：权限判定会算在 Xcode 头上而不是 Face ID，所以这个读数没有意义。请单独打开 Face ID.app 查看真实状态。")
+            } else if needsInputMonitoring {
+                inputMonitoringNotice()
+            }
 
-        VStack(alignment: .leading, spacing: 8) {
-            SettingsSectionTitle(text: "行为")
-            SettingsGroup {
-                SettingsRowContent(title: "悬停刘海时重试") {
-                    FIDToggle(isOn: $settings.retryOnHover)
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSectionTitle(text: "行为")
+                SettingsGroup {
+                    SettingsRowContent(title: "悬停刘海时重试") {
+                        FIDToggle(isOn: $settings.retryOnHover)
+                    }
+                    SettingsGroupDivider()
+                    SettingsRowContent(title: "失败后自动重试一次") {
+                        FIDToggle(isOn: $settings.autoRetryOnce)
+                    }
+                    SettingsGroupDivider()
+                    SettingsRowContent(title: "触觉反馈") {
+                        FIDToggle(isOn: $settings.hapticFeedbackEnabled)
+                    }
+                    SettingsGroupDivider()
+                    SettingsSteppedSliderRowContent(
+                        title: "人脸检测时长",
+                        valueLabel: "\(settings.faceDetectionSeconds) 秒",
+                        index: Binding(
+                            get: { Double(settings.faceDetectionSeconds - FIDSettings.faceDetectionRange.lowerBound) },
+                            set: { settings.faceDetectionSeconds = FIDSettings.faceDetectionRange.lowerBound + Int($0.rounded()) }
+                        ),
+                        stopCount: FIDSettings.faceDetectionRange.count
+                    )
                 }
-                SettingsGroupDivider()
-                SettingsRowContent(title: "失败后自动重试一次") {
-                    FIDToggle(isOn: $settings.autoRetryOnce)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSectionTitle(text: "诊断")
+                SettingsGroup {
+                    SettingsRowContent(
+                        title: "导出诊断日志",
+                        subtitle: "记录每次唤醒/锁屏事件走到了哪一步。遇到「打开屏幕却拉不起人脸认证」时，导出来发我定位。"
+                    ) {
+                        Button("导出…") { exportDiagnostics() }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(FIDTheme.accent)
+                    }
                 }
-                SettingsGroupDivider()
-                SettingsRowContent(title: "触觉反馈") {
-                    FIDToggle(isOn: $settings.hapticFeedbackEnabled)
+                if let diagnosticsNote {
+                    SettingsCaption(text: diagnosticsNote)
                 }
-                SettingsGroupDivider()
-                SettingsSteppedSliderRowContent(
-                    title: "人脸检测时长",
-                    valueLabel: "\(settings.faceDetectionSeconds) 秒",
-                    index: Binding(
-                        get: { Double(settings.faceDetectionSeconds - FIDSettings.faceDetectionRange.lowerBound) },
-                        set: { settings.faceDetectionSeconds = FIDSettings.faceDetectionRange.lowerBound + Int($0.rounded()) }
-                    ),
-                    stopCount: FIDSettings.faceDetectionRange.count
-                )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSectionTitle(text: "动画")
+                SettingsGroup {
+                    SettingsRowContent(title: "显示动画") {
+                        FIDToggle(isOn: $settings.showUnlockAnimation)
+                    }
+                    SettingsGroupDivider()
+                    UnlockAnimationPicker(
+                        selection: $settings.unlockAnimationStyle,
+                        isEnabled: settings.showUnlockAnimation
+                    )
+                }
             }
         }
+    }
 
-        VStack(alignment: .leading, spacing: 8) {
-            SettingsSectionTitle(text: "诊断")
-            SettingsGroup {
-                SettingsRowContent(
-                    title: "导出诊断日志",
-                    subtitle: "记录每次唤醒/锁屏事件走到了哪一步。遇到「打开屏幕却拉不起人脸认证」时，导出来发我定位。"
-                ) {
-                    Button("导出…") { exportDiagnostics() }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(FIDTheme.accent)
-                }
-            }
-            if let diagnosticsNote {
-                SettingsCaption(text: diagnosticsNote)
-            }
-        }
+    private var lockedState: some View {
+        SettingsEmptyStateView(
+            icon: "lock.fill",
+            message: "会话已锁定",
+            buttonTitle: isUnlocking ? "正在验证…" : "解锁会话",
+            isButtonEnabled: !isUnlocking,
+            caption: sessionError,
+            action: unlock
+        )
+    }
 
-        VStack(alignment: .leading, spacing: 8) {
-            SettingsSectionTitle(text: "动画")
-            SettingsGroup {
-                SettingsRowContent(title: "显示动画") {
-                    FIDToggle(isOn: $settings.showUnlockAnimation)
-                }
-                SettingsGroupDivider()
-                UnlockAnimationPicker(
-                    selection: $settings.unlockAnimationStyle,
-                    isEnabled: settings.showUnlockAnimation
-                )
-            }
+    private func unlock() {
+        isUnlocking = true
+        Task {
+            await pocController.unlockSession()
+            isUnlocking = false
         }
     }
 
