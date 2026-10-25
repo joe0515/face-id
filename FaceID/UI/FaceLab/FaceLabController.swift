@@ -99,7 +99,7 @@ final class FaceLabController {
         livenessAnalyzer.enabledCuesProvider = { [weak self] in
             self?.enabledLivenessCues ?? Set(LivenessCue.allCases)
         }
-        store.reloadIfUnlocked()
+        store.reload()
         if pipeline.usingFallbackEmbedder {
             log("ArcFace 不可用（\(pipeline.fallbackReason ?? "原因未知")）—— 改用 Vision 特征指纹。")
         } else {
@@ -148,8 +148,8 @@ final class FaceLabController {
             try await Task.detached(priority: .userInitiated) {
                 try await SecureCredentialManager.unlockSession(reason: "验证身份以使用 Face Lab")
             }.value
-            store.reloadIfUnlocked()
-            log("会话已解锁。")
+            store.reload()
+            log("设置已解锁。")
         } catch {
             sessionError = error.localizedDescription
         }

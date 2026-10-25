@@ -66,7 +66,7 @@ struct FaceLabView: View {
         // it closes. Same trick YourFaceSettingsPage uses.
         .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
             guard newPhase == .closed else { return }
-            controller.store.reloadIfUnlocked()
+            controller.store.reload()
         }
     }
 
@@ -100,7 +100,7 @@ struct FaceLabView: View {
             if controller.store.isLocked {
                 HStack {
                     Circle().fill(.red).frame(width: 8, height: 8)
-                    Text("会话已锁定 —— 已录入的人脸是加密的，暂时无法读取或保存。")
+                    Text("设置已锁定 —— 已录入的人脸暂时无法读取或保存。")
                         .font(.caption)
                     Spacer()
                     Button("解锁") {
@@ -404,7 +404,7 @@ struct FaceLabView: View {
                 }
 
                 if controller.store.identities.isEmpty {
-                    Text(controller.store.isLocked ? "解锁会话后才能查看已录入的身份。" : "还没有录入任何身份。")
+                    Text(controller.store.isLocked ? "解锁设置后才能查看已录入的身份。" : "还没有录入任何身份。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -452,7 +452,7 @@ struct FaceLabView: View {
 
                 if controller.store.identities.isEmpty {
                     Text(controller.store.isLocked
-                         ? "解锁会话后才能查看已录入的身份。"
+                         ? "解锁设置后才能查看已录入的身份。"
                          : "还没有录入任何身份 —— 用「添加身份」跑一遍九姿势引导采集。")
                         .font(.caption)
                         .foregroundStyle(.secondary)

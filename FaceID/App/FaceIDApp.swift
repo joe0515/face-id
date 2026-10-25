@@ -101,19 +101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // after the user has opened Settings once.
         environment.appUnlockCoordinator.start()
 
-        // 刷脸比对的模板是用**会话密钥**加密的，而密钥只在内存里：进程一重启，会话就是
-        // 锁定态，`FaceEnrollmentStore` 载不出任何人脸 —— 表现出来就是「重装/重启之后
-        // 录入过的人脸一个都认不出」，而且扫描照常进行、只是永远匹配不到。
-        //
-        // 所以启动时补这一次会话解锁（一次触控 ID / 登录密码），之后整段会话内刷脸可用。
-        if FIDSettings.shared.isFaceUnlockEnabled,
-           SecureCredentialManager.hasStoredPassword(),
-           !SecureCredentialManager.isSessionUnlocked {
+        // 1.3 起刷脸不再依赖设置会话（模板和密码都存在设备密钥下，登录即可读），
+        // 所以启动时**不再**例行补一次会话解锁。唯一还需要它的场合：磁盘上还有
+        // 1.2 及以前的加密数据 —— 那次验证会顺带完成一次性迁移（旧数据改存到
+        // 设备密钥下），之后永远不再提示。
+        if SecureCredentialManager.needsLegacyMigration {
             Task { @MainActor in
                 if PermissionGate.needsAttention {
                     // 启动期的权限引导此刻正显示在刘海面板上。两个都需要用户操作的窗口
                     // 同时弹出会互相遮挡（面板 + 系统 Touch ID 框），用户看到的就是
-                    // 「授权窗口一起弹出」。等面板被处理完再补这一次会话解锁。
+                    // 「授权窗口一起弹出」。等面板被处理完再补这一次验证。
                     let deadline = Date().addingTimeInterval(120)
                     while Date() < deadline,
                           NotchOverlayController.shared.phase == .onboarding {
@@ -123,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // 让启动期的状态栏先就位，避免验证弹窗和它抢焦点。
                     try? await Task.sleep(for: .seconds(1.5))
                 }
-                await environment.pocController.unlockSession()
+                await environment.pocController.unlockSession(reason: "验证身份以完成安全存储升级（仅一次）")
             }
         }
 
@@ -156,10 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(permissionItem)
         permissionMenuItem = permissionItem
 
-        // Only shown right after a reinstall/rebuild — see `KeychainTrust` for why an
-        // ad-hoc build has to re-authorize the keychain item every time. The row itself
-        // lives in the permission review panel (one place for every grant), and this
-        // item just opens that panel.
+        // Hidden whenever every grant is in place — see `PermissionGate`. The row
+        // itself lives in the permission review panel (one place for every grant),
+        // and this item just opens that panel.
         let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettingsWindow), keyEquivalent: ",")
         settingsItem.target = self
         settingsItem.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: nil)
@@ -277,7 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateSessionMenuItem() {
         guard let sessionMenuItem else { return }
         let isUnlocked = environment.pocController.isSessionUnlocked
-        sessionMenuItem.title = isUnlocked ? "会话已解锁" : "会话已锁定"
+        // 「设置」会话锁：只锁设置界面。整机刷脸解锁与应用加锁从来不受它影响 ——
+        // 1.3 之前它会连人脸模板一起锁（模板加密在会话密钥下），那已修复。
+        sessionMenuItem.title = isUnlocked ? "设置已解锁" : "设置已锁定"
         sessionMenuItem.image = NSImage(
             systemSymbolName: isUnlocked ? "lock.open.fill" : "lock.fill",
             accessibilityDescription: nil

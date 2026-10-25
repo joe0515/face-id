@@ -47,6 +47,8 @@ final class FaceUnlockCoordinator {
     private var hasArmedForCurrentLock = false
     /// One-shot per lock session — an auto-retry that could itself auto-retry would loop the camera for the whole lock session.
     private var hasAutoRetriedForCurrentLock = false
+    /// One notice per lock session for the unreadable-store bail-out — see `presentStoreUnreadableNoticeIfNeeded`.
+    private var hasPresentedUnreadableNotice = false
     private var scanTask: Task<Void, Never>?
     /// Bumped by every `startScanCycle()`; a cycle bails once superseded (see `runScanCycle(generation:)`).
     private var scanGeneration = 0
@@ -84,6 +86,26 @@ final class FaceUnlockCoordinator {
             self?.disarmOverlay()
         }
         observeLockAndWakeEvents()
+        observeSessionChanges()
+    }
+
+    /// The unreadable-store notice says "verify once from the menu bar" — stale the
+    /// moment the user does (that verification is also what runs the one-time
+    /// migration). Dropping it on unlock also re-arms it for the next lock session.
+    private func observeSessionChanges() {
+        NotificationCenter.default.addObserver(
+            forName: .secureCredentialSessionDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.hasPresentedUnreadableNotice = false
+                if case .notice = NotchOverlayController.shared.phase {
+                    NotchOverlayController.shared.dismissNotice()
+                }
+            }
+        }
     }
 
     /// Re-subscribes on every change — `withObservationTracking` only fires once per registration.
@@ -206,9 +228,12 @@ final class FaceUnlockCoordinator {
             return
         }
 
-        guard SecureCredentialManager.isSessionUnlocked else {
-            statusMessage = "整机解锁已开启，但会话处于锁定状态 —— 请先在「密码」设置里验证一次。"
-            UnlockDiagnostics.log("  → 放弃：会话处于锁定状态（这是「拉不起认证界面」最常见的原因，且界面上没有任何提示）")
+        // 1.3 起模板存在设备密钥下，刷脸不再依赖设置会话；只有还没完成一次性迁移的
+        // 旧安装（或设备密钥文件本身不可读）才会在这里卡住。
+        if let reason = SecureFaceStore.unreadableReason() {
+            statusMessage = "整机解锁已开启，但已录入的人脸数据还无法读取。"
+            UnlockDiagnostics.log("  → 放弃：人脸数据不可读（\(String(describing: reason))）")
+            presentStoreUnreadableNoticeIfNeeded()
             return
         }
         guard SecureCredentialManager.hasStoredPassword() else {
@@ -240,27 +265,39 @@ final class FaceUnlockCoordinator {
                 return
             }
 
-            // 应用更新后（ad-hoc 每次重编 cdhash 都变），旧钥匙串条目的 ACL 不再认这个
-            // 进程。此时**不能**在锁屏上引导授权：`reauthorizeKeychain` 走 LAContext，
-            // 而未登录状态下触控 ID 不可用、系统弹出的密码框也无法交互 —— 用户看到的
-            // 就是「扫脸时冒出个密码输入框，然后无响应」（glance 从不会走到这里：它的
-            // ACL 不失效，从不重新授权）。
-            //
-            // 授权必须等用户登录后从菜单栏「需要授权…」完成，那里 LAContext 可用。
-            // 这里只负责把状态说清楚：刘海面板是登录窗口上我们唯一可见的表面。
-            if KeychainTrust.needsAuthorization {
-                UnlockDiagnostics.log("  · 钥匙串 ACL 不认当前构建，本次不扫描；改为在刘海面板说明并引导登录后从菜单栏授权")
-                statusMessage = "Face ID 已更新，需要重新授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
-                if self.showsUI {
-                    NotchOverlayController.shared.presentNotice(
-                        "Face ID 已更新，需要重新授权钥匙串访问。\n请登录后从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
-                    )
-                }
-                hasArmedForCurrentLock = false
-                return
-            }
-
+            // 1.3 起扫描路径不再读任何钥匙串条目：模板和密码都在设备密钥下，
+            // 锁屏上没有任何系统对话框需要弹给用户。
             await self.arm(autoScan: shouldAutoScan)
+        }
+    }
+
+    /// The unreadable-store bail-out used to be invisible: no panel, no notice, nothing —
+    /// indistinguishable from the feature being switched off. The notch panel is the only
+    /// surface we have on the lock screen, so say what happened and how to undo it.
+    ///
+    /// Two causes, two texts: a 1.2-era store that hasn't been through the one-time
+    /// migration yet (the verification it asks for is exactly what runs that migration),
+    /// and a device key that can't be read at all. Since 1.3 the settings session itself
+    /// never blocks face unlock.
+    ///
+    /// Once per lock session: `scheduleTriggerEvaluation`'s probe loop re-evaluates ~24
+    /// times in six seconds, and `presentNotice` unconditionally re-shows the panel —
+    /// without the one-shot flag that's a strobe.
+    private func presentStoreUnreadableNoticeIfNeeded() {
+        guard showsUI, !hasPresentedUnreadableNotice else { return }
+        switch SecureFaceStore.unreadableReason() {
+        case .legacyNeedsVerification:
+            hasPresentedUnreadableNotice = true
+            NotchOverlayController.shared.presentNotice(
+                "Face ID 的人脸数据还停留在旧版加密格式，需要升级后才能刷脸。\n请登录 macOS，然后在菜单栏 Face ID 图标里验证一次（仅此一次，之后不再需要）。"
+            )
+        case .deviceKeyUnavailable:
+            hasPresentedUnreadableNotice = true
+            NotchOverlayController.shared.presentNotice(
+                "Face ID 暂时读不出设备密钥，无法加载已录入的人脸。\n请登录 macOS 后在菜单栏 Face ID 图标里验证一次；若仍然失败，请在「密码」页移除存储的数据后重新设置。"
+            )
+        case .none:
+            return
         }
     }
 
@@ -306,6 +343,10 @@ final class FaceUnlockCoordinator {
         scanGeneration &+= 1
         autoRetryTask?.cancel()
         autoRetryTask = nil
+        // A disarm means the machine is unlocked (or the feature was switched off) —
+        // either way the unreadable-store notice is stale and the next lock session may
+        // show it again.
+        hasPresentedUnreadableNotice = false
         stopCapture()
         NotchOverlayController.shared.disarm()
         // Covers isEnabled being switched off directly, keeping "disarmed" and "not listening for space" in lockstep.
@@ -331,7 +372,7 @@ final class FaceUnlockCoordinator {
               FIDSettings.shared.unlockTriggers.contains(.onSpace),
               LockMonitor.isScreenActuallyLocked(),
               NotchGeometry.preferredScreen() != nil,
-              SecureCredentialManager.isSessionUnlocked,
+              SecureFaceStore.isReadable(),
               SecureCredentialManager.hasStoredPassword()
         else { return }
 
@@ -407,21 +448,10 @@ final class FaceUnlockCoordinator {
         }
 
         // Hover- and auto-retry reach this point without going through
-        // `evaluateTrigger`, so the keychain gate above doesn't cover them. Scanning
-        // anyway would match a face and then fail to read the password — the ambush
-        // this whole path is meant to avoid. Point the user at the menu-bar item
-        // instead of pretending to work.
-        guard !KeychainTrust.needsAuthorization else {
-            UnlockDiagnostics.log("runScanCycle: 钥匙串 ACL 不认当前构建，本次不扫描（请登录后从菜单栏「需要授权…」完成授权）")
-            statusMessage = "Face ID 已更新，需要重新授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」进入，在系统弹窗里选择「始终允许」。"
-            if showsUI {
-                NotchOverlayController.shared.presentNotice(
-                    "需要重新授权钥匙串访问。\n请登录后从菜单栏「需要授权…」进入，选择「始终允许」。"
-                )
-            }
-            return
-        }
-
+        // `evaluateTrigger`, so the store gate there doesn't cover them. Since 1.3
+        // nothing on this path reads the keychain, so there is no second gate to
+        // keep in step — an unreadable store is surfaced once, by `evaluateTrigger`,
+        // before a scan ever starts.
         await camera.start()
         guard generation == scanGeneration else { return }
 

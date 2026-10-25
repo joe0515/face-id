@@ -22,13 +22,8 @@ nonisolated enum PermissionGate {
     /// Deliberately *not* a one-shot "have we shown the gate yet" flag: a reinstall,
     /// a `tccutil reset`, and every rebuild with a new ad-hoc cdhash all invalidate
     /// the grants without touching UserDefaults, so the state has to be re-derived.
-    ///
-    /// The keychain counts as a grant too: an ad-hoc build only gets access to the items
-    /// written by an earlier build after the user answers the ACL dialog once, and until
-    /// that happens every unlock is interrupted by it.
     static var needsAttention: Bool {
         !AccessibilityPermission.check().isFullyGranted
             || AVCaptureDevice.authorizationStatus(for: .video) != .authorized
-            || KeychainTrust.needsAuthorization
     }
 }

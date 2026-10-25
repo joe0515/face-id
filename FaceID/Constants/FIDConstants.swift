@@ -253,9 +253,6 @@ nonisolated enum FIDConstants {
         static let appLockTouchIDEnabled = "FID.appLock.touchIDEnabled"
         static let appLockShieldMode = "FID.appLock.shieldMode"
 
-        // 会话密钥的保护方式 —— 见 `SecureCredentialManager.SessionKeyProtection`
-        static let sessionKeyProtection = "FID.settings.sessionKeyProtection"
-
         // 定时锁 / 解锁窗口（每个窗口整体作为一个 JSON blob 持久化，
         // 因为它们始终一起读写，拆成 5 个标量键反而容易写坏中间态）
         static let lockSchedule = "FID.appLock.schedule.lock"

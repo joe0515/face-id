@@ -15,7 +15,8 @@ enum KeychainError: LocalizedError {
     case accessControlFailed(String)
     case authenticationFailed
     /// The item's ACL dialog could not be presented (or was dismissed) — usually means
-    /// this build hasn't been authorized yet. See `KeychainTrust`.
+    /// this build hasn't been authorized yet, or the screen is locked and there is no
+    /// UI session to host it.
     case interactionNotAllowed
     case osStatus(OSStatus)
 
@@ -93,16 +94,18 @@ enum KeychainManager {
             throw KeychainError.authenticationFailed
         case errSecInteractionNotAllowed:
             // -25308: the ACL dialog couldn't be shown (locked screen, no UI session) or
-            // the user dismissed it. Distinct from "wrong password" — the fix is to run
-            // the read from an interactive moment, see `KeychainTrust`.
+            // the user dismissed it.
             throw KeychainError.interactionNotAllowed
         default:
             throw KeychainError.osStatus(status)
         }
     }
 
-    /// Replaces any existing item. Pass `accessControl` to gate future reads behind Touch ID; `nil` for device-local, unlock-only.
-    nonisolated static func save(account: String, data: Data, accessControl: SecAccessControl? = nil) throws {
+    /// Replaces any existing item. Stored device-local (`WhenUnlockedThisDeviceOnly`),
+    /// with no access control — the only remaining keychain users are legacy items
+    /// read by the one-time 1.2 → 1.3 migration, never new secrets (see
+    /// `DeviceKeyStore` for why new secrets don't go in the keychain at all).
+    nonisolated static func save(account: String, data: Data) throws {
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -110,17 +113,13 @@ enum KeychainManager {
         ]
         SecItemDelete(deleteQuery as CFDictionary)
 
-        var addQuery: [String: Any] = [
+        let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: data
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
-        if let accessControl {
-            addQuery[kSecAttrAccessControl as String] = accessControl
-        } else {
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        }
 
         let status = SecItemAdd(addQuery as CFDictionary, nil)
         guard status == errSecSuccess else { throw KeychainError.osStatus(status) }
@@ -136,20 +135,5 @@ enum KeychainManager {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.osStatus(status)
         }
-    }
-
-    /// `.userPresence` requires Touch ID or device password, with no separate no-hardware handling needed.
-    nonisolated static func makeUserPresenceAccessControl() throws -> SecAccessControl {
-        var accessError: Unmanaged<CFError>?
-        guard let access = SecAccessControlCreateWithFlags(
-            kCFAllocatorDefault,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            .userPresence,
-            &accessError
-        ) else {
-            let msg = (accessError?.takeRetainedValue() as Error?)?.localizedDescription ?? "unknown"
-            throw KeychainError.accessControlFailed(msg)
-        }
-        return access
     }
 }

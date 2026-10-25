@@ -199,8 +199,8 @@ struct GeneralSettingsPage: View {
     private var lockedState: some View {
         SettingsEmptyStateView(
             icon: "lock.fill",
-            message: "会话已锁定",
-            buttonTitle: isUnlocking ? "正在验证…" : "解锁会话",
+            message: "设置已锁定",
+            buttonTitle: isUnlocking ? "正在验证…" : "解锁设置",
             isButtonEnabled: !isUnlocking,
             caption: sessionError,
             action: unlock

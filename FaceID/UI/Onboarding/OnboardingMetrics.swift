@@ -37,8 +37,8 @@ enum OnboardingMetrics {
     static let pillPermissionsHeight: CGFloat = 254
 
     /// The launch-time permission review replays the permissions step with one extra
-    /// row (the Accessibility privilege is split in two) **and a Keychain row**, plus a
-    /// one-line caption that may or may not be there.
+    /// row (the Accessibility privilege is split in two) plus a one-line caption that
+    /// may or may not be there.
     ///
     /// These are the **fitted heights of the real stacks** (measured by rendering the
     /// same fonts, insets and fixed row/button heights at `panelWidth`), not sums of
@@ -59,8 +59,14 @@ enum OnboardingMetrics {
     /// The caption allowance went 38 → 56 in the same pass: the merged row's "you must
     /// restart for this to take effect" hint is two lines, not one, and the one-line
     /// figure clipped it.
-    static let notchPermissionReviewHeight: CGFloat = 410
-    static let pillPermissionReviewHeight: CGFloat = 388
+    ///
+    /// Re-measured 2026-10-25 (1.3): the keychain row is gone — nothing in the app
+    /// reads an ACL'd keychain item on any user path any more, so there is no
+    /// per-build authorization left to ask for. `PermissionRow` is fixed-height
+    /// (44) and the stack spacing is 10, so the delta is exactly 54 on both styles:
+    /// notch 410 → 356 / pill 388 → 334 with the caption, 300 / 278 without.
+    static let notchPermissionReviewHeight: CGFloat = 356
+    static let pillPermissionReviewHeight: CGFloat = 334
     /// The caption line(s) plus the stack spacing they introduce.
     static let permissionReviewHintHeight: CGFloat = 56
 

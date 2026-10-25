@@ -56,7 +56,7 @@ struct PasswordSettingsPage: View {
         .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
             guard newPhase == .closed else { return }
             pocController.refreshCredentialStatus()
-            FaceEnrollmentStore.shared.reloadIfUnlocked()
+            FaceEnrollmentStore.shared.reload()
         }
     }
 
@@ -77,8 +77,8 @@ struct PasswordSettingsPage: View {
     private var lockedState: some View {
         SettingsEmptyStateView(
             icon: "lock.fill",
-            message: "会话已锁定",
-            buttonTitle: isUnlocking ? "正在验证…" : "解锁会话",
+            message: "设置已锁定",
+            buttonTitle: isUnlocking ? "正在验证…" : "解锁设置",
             isButtonEnabled: !isUnlocking,
             caption: sessionError,
             action: unlock
@@ -98,22 +98,8 @@ struct PasswordSettingsPage: View {
 
                 SettingsGroupDivider()
 
-                SettingsRowContent(
-                    title: "会话密钥保护",
-                    info: "「钥匙串强制」由系统在交出密钥前要求 Touch ID —— 即使有代码注入进 Face ID 进程也读不到。「应用内校验」是本应用自己先弹 Touch ID 再读取，只在前一种不可用时降级使用。"
-                ) {
-                    Text(protection.title)
-                        .font(.system(size: 12))
-                        .foregroundStyle(protection == .keychainGated
-                            ? SettingsMetrics.textSecondary
-                            : FIDTheme.accent)
-                        .lineLimit(1)
-                }
-
-                SettingsGroupDivider()
-
                 SettingsSteppedSliderRowContent(
-                    title: "自动锁定会话",
+                    title: "自动锁定设置",
                     valueLabel: settings.autoLockInterval.title,
                     index: Binding(
                         get: { settings.autoLockInterval.sliderIndex },
@@ -137,19 +123,13 @@ struct PasswordSettingsPage: View {
                 }
             }
 
-            if protection == .appVerified {
-                SettingsCaption(text: "当前构建没有可用的签名身份，钥匙串拒绝存储受访问控制的条目，因此会话密钥改用应用内校验。它保护的是你的 macOS 登录密码 —— 要拿到系统级强制保护，请在 Xcode 里为 target 选择开发团队后重新构建（`TEAM_ID=你的团队ID make release`），然后移除密码并重新设置一次。")
-            }
+            SettingsCaption(text: "闲置超时后重新打开设置需要验证身份。只锁设置界面 —— 整机刷脸解锁与应用加锁不受影响，锁屏后照样能刷脸。")
 
             if let statusMessage {
                 SettingsCaption(text: statusMessage)
             }
         }
     }
-
-    /// Re-read on appear so a rebuild under a different signing identity shows up
-    /// without needing to visit another page first.
-    @State private var protection = SecureCredentialManager.SessionKeyProtection.stored
 
     // MARK: - Actions
 
@@ -159,16 +139,16 @@ struct PasswordSettingsPage: View {
         Task {
             await pocController.unlockSession()
             sessionError = pocController.sessionError
-            // Face store is encrypted under the same session key, so reload
-            // it now rather than leaving Your Face stuck showing "locked".
-            FaceEnrollmentStore.shared.reloadIfUnlocked()
+            // Reload the face store now rather than leaving Your Face stuck
+            // showing "locked".
+            FaceEnrollmentStore.shared.reload()
             isUnlocking = false
         }
     }
 
-    /// Face samples must be deleted before the password/session key —
-    /// `deletePassword()` clears the cached session key, and deleting the
-    /// face store requires an unlocked session.
+    /// Faces first, then the password: `deletePassword()` also locks the
+    /// settings session, and a face store with no password left behind would
+    /// keep the "not set up" state lying.
     private func removePassword() {
         do {
             FaceEnrollmentStore.shared.deleteAll()

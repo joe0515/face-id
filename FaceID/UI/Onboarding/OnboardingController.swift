@@ -313,7 +313,7 @@ final class OnboardingController {
         Task { @MainActor in
             guard await unlockForEnrollment(reason: "验证身份以重新录入人脸") else { return }
             let store = FaceEnrollmentStore.shared
-            store.reloadIfUnlocked()
+            store.reload()
             let existing = store.identities.first
             present(
                 target: existing.map { .replacing($0.id) } ?? .newIdentity,
@@ -327,7 +327,7 @@ final class OnboardingController {
     static func startAddIdentity() {
         Task { @MainActor in
             guard await unlockForEnrollment(reason: "验证身份以录入另一张人脸") else { return }
-            FaceEnrollmentStore.shared.reloadIfUnlocked()
+            FaceEnrollmentStore.shared.reload()
             present(target: .newIdentity, prefillName: "")
         }
     }
@@ -337,7 +337,7 @@ final class OnboardingController {
     static func startRecapture(of identity: FaceIdentity) {
         Task { @MainActor in
             guard await unlockForEnrollment(reason: "验证身份以重新录入这张人脸") else { return }
-            FaceEnrollmentStore.shared.reloadIfUnlocked()
+            FaceEnrollmentStore.shared.reload()
             present(target: .replacing(identity.id), prefillName: identity.name)
         }
     }
@@ -405,9 +405,10 @@ final class OnboardingController {
     }
 
     var panelSize: CGSize {
-        // The review carries one more row than the first-run permissions step, and a
-        // caption that only exists while one of the two privileges is still missing —
-        // so its height tracks that state instead of always reserving the space.
+        // The review shows the same two rows as the first-run permissions step (with
+        // Accessibility's two real privileges split out), and a caption that only
+        // exists while one of the two privileges is still missing — so its height
+        // tracks that state instead of always reserving the space.
         if isPermissionOnly {
             return OnboardingMetrics.permissionReviewPanelSize(
                 for: currentPanelStyle,
@@ -426,12 +427,6 @@ final class OnboardingController {
     /// "is this process trusted at all" answer it has always used.
     private(set) var accessibilityPrivileges = AccessibilityPermission.check()
     private(set) var cameraPermission: CameraPermissionState = .notDetermined
-    /// Whether this build still has to be authorized for the keychain items written by an
-    /// earlier one. Not a TCC grant — an ACL prompt we can only answer once per build.
-    private(set) var keychainNeedsAuthorization = KeychainTrust.needsAuthorization
-    /// Why the last keychain authorization didn't take, surfaced in the hint slot (same
-    /// height as the other hint, so the panel doesn't resize on failure).
-    private(set) var keychainError: String?
     var bothPermissionsGranted: Bool { accessibilityGranted && cameraPermission == .granted }
 
     private var permissionsPollTask: Task<Void, Never>?
@@ -837,7 +832,6 @@ final class OnboardingController {
 
     private func refreshPermissions() {
         accessibilityPrivileges = AccessibilityPermission.check()
-        keychainNeedsAuthorization = KeychainTrust.needsAuthorization
         accessibilityGranted = KeystrokeInjector.isAccessibilityTrusted()
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: cameraPermission = .granted
@@ -905,16 +899,15 @@ final class OnboardingController {
         hasPromptedAccessibility || hasPromptedPostEvent
     }
 
-    // MARK: - Keychain authorization
+    // MARK: - Review hint
 
     /// The review has exactly one caption slot; either source can fill it, so the panel
     /// height only depends on "is there a hint", not on which one.
     var permissionReviewHasHint: Bool {
-        keychainError != nil || accessibilityPrivileges.isPartiallyGranted || accessibilityWasRequested
+        accessibilityPrivileges.isPartiallyGranted || accessibilityWasRequested
     }
 
     var permissionReviewHint: String? {
-        if let keychainError { return keychainError }
         if accessibilityPrivileges.isPartiallyGranted {
             return "两项没有单独的开关。授予后需点「重新启动」；仍无效就把 Face ID 用「−」移除再「+」加回。"
         }
@@ -926,31 +919,6 @@ final class OnboardingController {
             return "已在设置里勾选？需点「重新启动」才生效（macOS 在进程启动时固定权限判定）；若列表里已有旧的 Face ID 条目，先用「−」移除再「+」添加。"
         }
         return nil
-    }
-
-    private(set) var isGrantingKeychain = false
-
-    /// Reads the session key once so the ACL dialog appears here, in the panel the user
-    /// opened on purpose — rather than mid-unlock. Answering it with 「始终允许」 is what
-    /// makes it stick for this build (「允许」 only covers that one read).
-    func grantKeychain() {
-        guard !isGrantingKeychain else { return }
-        isGrantingKeychain = true
-        keychainError = nil
-        // 系统钥匙串对话框属于 SecurityAgent 进程。我们此刻是 active app 且刘海面板
-        // 持有 key —— 那个框会显示出来却收不到键盘（现场表现：密码框打不了字）。
-        // 先交还 key，再触发这次读取。
-        NotchOverlayController.shared.relinquishKeyForSystemPrompt()
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                try await SecureCredentialManager.reauthorizeKeychain(reason: "允许 Face ID 读取本机钥匙串")
-            } catch {
-                self.keychainError = error.localizedDescription
-            }
-            self.isGrantingKeychain = false
-            self.refreshPermissions()
-        }
     }
 
     func grantCamera() {
@@ -1263,11 +1231,11 @@ final class OnboardingController {
             return
         }
 
-        store.reloadIfUnlocked()
+        store.reload()
         do {
             try commitEnrollment(name: trimmed)
         } catch {
-            // Realistically a session that lapsed between the entry point's Touch ID
+            // Realistically a write that failed between the entry point's Touch ID
             // prompt and now. Stay on this step rather than showing "You're all set"
             // over a save that didn't happen.
             nameError = error.localizedDescription
@@ -1278,9 +1246,9 @@ final class OnboardingController {
         scheduleCompletionDismiss()
     }
 
-    /// The single place guided-enrollment samples are persisted. Requires an
-    /// unlocked session; in the full setup flow that only exists once
-    /// `finish(password:)` has called `SecureCredentialManager.unlockSession`.
+    /// The single place guided-enrollment samples are persisted. The entry points
+    /// gate on identity first (`unlockForEnrollment`, or `finish(password:)`'s
+    /// `unlockSession`), so a save can't happen unverified.
     private func commitEnrollment(name: String) throws {
         let samples = collectedSamples.map {
             FaceSample(embedding: $0.embedding, pose: $0.pose.name, capturedAt: $0.capturedAt, quality: $0.quality)
@@ -1316,9 +1284,9 @@ final class OnboardingController {
                 try await SecureCredentialManager.unlockSession(reason: "设置 Face ID")
             }.value
 
-            // Only now that the session key exists can samples be encrypted and saved.
-            // Empty in the password-only flow, which shares this method.
-            store.reloadIfUnlocked()
+            // Identity is verified at this point, so samples can be encrypted and
+            // saved. Empty in the password-only flow, which shares this method.
+            store.reload()
             if !collectedSamples.isEmpty {
                 let name = pendingName.trimmingCharacters(in: .whitespacesAndNewlines)
                 // The naming step couldn't run this check while the store was locked.

@@ -129,16 +129,6 @@ struct PermissionReviewStepView: View {
                 granted: controller.accessibilityPrivileges.isFullyGranted
             ) { controller.grantMissingAccessibility() }
 
-            // Not a TCC grant: the keychain items were written by an earlier build, and
-            // an ad-hoc signature's identity (its cdhash) changes on every rebuild. The
-            // ACL dialog has to be answered once per build — doing it here keeps it from
-            // interrupting an unlock.
-            PermissionRow(
-                title: "钥匙串访问",
-                detail: "系统弹窗里请选「始终允许」",
-                granted: !controller.keychainNeedsAuthorization
-            ) { controller.grantKeychain() }
-
             PermissionRow(
                 title: "摄像头",
                 detail: "刷脸验证（缺了改用触控 ID）",

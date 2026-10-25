@@ -39,6 +39,15 @@ final class LockMonitor {
     private(set) var lastEvent: LockEventKind?
     private(set) var eventCount: Int = 0
 
+    /// Process-wide timestamp of the most recent wake signal. Static (not per-instance) so non-coordinator
+    /// consumers — notably `SessionAutoLocker` — can see the same wake the coordinator does.
+    ///
+    /// Exists so a wall-clock idle timer doesn't count an entire sleep as "away": `SessionAutoLocker.evaluate`
+    /// treats a recent wake as activity and leaves the settings session alone. `unsafe` because it is mutable
+    /// state, but every access is on the main thread: written from the `.main`-queue notification observers
+    /// below, read from main-actor consumers.
+    nonisolated(unsafe) static private(set) var lastWakeAt: Date?
+
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
 
@@ -114,6 +123,7 @@ final class LockMonitor {
     private func recordWake() {
         isSleeping = false
         wakeEventCount += 1
+        Self.lastWakeAt = Date()
         record(.wake)
     }
 

@@ -16,14 +16,12 @@ struct YourFaceSettingsPage: View {
     @State private var sessionError: String?
     @State private var isUnlocking = false
     @State private var identityPendingDeletion: FaceIdentity?
-    /// Surfaced when an encrypted write fails (realistically: the session
-    /// lapsed between rendering and tapping). The store rolls back on
+    /// Surfaced when an encrypted write fails. The store rolls back on
     /// failure, so the control snaps back on its own — this explains why.
     @State private var writeError: String?
 
-    /// Locked takes priority over enrollment status: `FaceIdentity` data is
-    /// encrypted under the session key, so whether anyone is enrolled is
-    /// unknown until the session is unlocked.
+    /// Locked takes priority over enrollment status: the settings session gates
+    /// this page, and `isLocked` (which mirrors it) is the UI's "locked" flag.
     private enum PageStateKind: Equatable {
         case locked
         case unreadable
@@ -68,12 +66,12 @@ struct YourFaceSettingsPage: View {
                 .accessibilityHidden(stateKind != .enrolled)
         }
         .animation(SettingsMetrics.stateTransitionAnimation, value: stateKind)
-        .onAppear { store.reloadIfUnlocked() }
+        .onAppear { store.reload() }
         // The enrollment flow runs in the notch, outside this view's
         // hierarchy, so nothing else prompts a re-check once it closes.
         .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
             guard newPhase == .closed else { return }
-            store.reloadIfUnlocked()
+            store.reload()
         }
         .confirmationDialog(
             "删除这张已录入的人脸？",
@@ -96,8 +94,8 @@ struct YourFaceSettingsPage: View {
     private var lockedState: some View {
         SettingsEmptyStateView(
             icon: "lock.fill",
-            message: "会话已锁定",
-            buttonTitle: isUnlocking ? "正在验证…" : "解锁会话",
+            message: "设置已锁定",
+            buttonTitle: isUnlocking ? "正在验证…" : "解锁设置",
             isButtonEnabled: !isUnlocking,
             caption: sessionError,
             action: unlock
@@ -119,10 +117,10 @@ struct YourFaceSettingsPage: View {
                 .font(SettingsMetrics.rowFont)
                 .foregroundStyle(SettingsMetrics.textSecondary)
 
-            SettingsCaption(text: store.loadFailure ?? "存储的数据无法用当前会话密钥解密。")
+            SettingsCaption(text: store.loadFailure ?? "存储的人脸数据无法解密。")
                 .multilineTextAlignment(.center)
 
-            SettingsCaption(text: "没有删除任何数据，Face ID 也不会覆盖它 —— 在问题解决前，录入功能已被阻止。退出并重新打开 Face ID 可重试。如果一直失败，说明会话密钥已经和这份数据对不上了：在「密码」页移除存储的密码即可一并清除，然后重新设置。")
+            SettingsCaption(text: "没有删除任何数据，Face ID 也不会覆盖它 —— 在问题解决前，录入功能已被阻止。退出并重新打开 Face ID 可重试。如果一直失败，说明这份数据和设备密钥已经对不上了：在「密码」页移除存储的密码即可一并清除，然后重新设置。")
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: SettingsMetrics.emptyStateMinHeight)
@@ -253,7 +251,7 @@ struct YourFaceSettingsPage: View {
                 try await Task.detached(priority: .userInitiated) {
                     try await SecureCredentialManager.unlockSession(reason: "验证身份以查看已录入的人脸")
                 }.value
-                store.reloadIfUnlocked()
+                store.reload()
             } catch {
                 sessionError = error.localizedDescription
             }

@@ -2,8 +2,10 @@
 //  FaceEnrollmentStore.swift
 //  Face ID
 //
-//  Persisted encrypted under the same Touch-ID-gated session key as the stored Mac password (see SecureFaceStore);
-//  `isLocked`/`reloadIfUnlocked()` let the UI distinguish "locked" from "nothing enrolled."
+//  Persisted encrypted under the device key (see SecureFaceStore) — since 1.3 the
+//  face data no longer depends on the settings session, so the scan paths can load
+//  identities while Settings is locked. `isLocked`/`reload()` let the UI
+//  distinguish "settings session locked" from "nothing enrolled."
 //
 
 import Foundation
@@ -124,8 +126,8 @@ final class FaceEnrollmentStore {
     }
 
     private init() {
-        reloadIfUnlocked()
-        // Reload whenever the session key changes, regardless of call site, so this store can't go stale
+        reload()
+        // Reload whenever the session changes, regardless of call site, so the UI's "locked" flag can't go stale
         // relative to whichever UI changed the session.
         NotificationCenter.default.addObserver(
             forName: .secureCredentialSessionDidChange,
@@ -133,18 +135,19 @@ final class FaceEnrollmentStore {
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.reloadIfUnlocked()
+                self?.reload()
             }
         }
     }
 
-    /// Re-attempts loading from encrypted storage. A no-op (leaves
-    /// `isLocked = true`) if the session isn't unlocked yet.
-    func reloadIfUnlocked() {
-        guard SecureCredentialManager.isSessionUnlocked else {
-            isLocked = true
-            return
-        }
+    /// Re-reads from encrypted storage. Since 1.3 the data no longer depends
+    /// on the session (it is under the device key), so this always attempts a
+    /// load — the scan paths need identities while the settings session is
+    /// locked, which is the normal state. `isLocked` stays a **UI** flag
+    /// mirroring the settings session, so the Settings pages still show their
+    /// "locked" state while it is on.
+    func reload() {
+        isLocked = !SecureCredentialManager.isSessionUnlocked
         do {
             identities = try SecureFaceStore.load()
             hasLoadedSuccessfully = true
@@ -155,7 +158,6 @@ final class FaceEnrollmentStore {
             identities = []
             loadFailure = error.localizedDescription
         }
-        isLocked = false
     }
 
     /// Adds one captured sample to `name`'s identity (creating it if new). Existing samples from a different embedder
@@ -257,8 +259,8 @@ final class FaceEnrollmentStore {
         try persist()
     }
 
-    /// Removes the file outright (rather than writing an empty array) — the teardown path when the session key
-    /// itself is being removed, so no orphaned encrypted file is left behind for the next setup to trip over.
+    /// Removes the file outright (rather than writing an empty array) — the teardown path when the user removes
+    /// everything from the Password page, so no orphaned encrypted file is left behind.
     func deleteAll() {
         identities.removeAll()
         SecureFaceStore.deleteAll()

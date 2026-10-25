@@ -38,12 +38,14 @@ final class POCController {
 
     // MARK: - Session (Touch ID gate)
 
-    /// Must succeed before `savePassword()` or `injectStoredPassword()` will do anything.
-    func unlockSession() async {
+    /// Verifies identity and unlocks the **settings session**. The reason is
+    /// caller-specific because the prompt is user-facing: the launch-time
+    /// migration prompt has to say what it is for.
+    func unlockSession(reason: String = "验证身份以设置或使用 Face ID") async {
         sessionError = nil
         do {
             try await Task.detached(priority: .userInitiated) {
-                try await SecureCredentialManager.unlockSession(reason: "验证身份以设置或使用 Face ID")
+                try await SecureCredentialManager.unlockSession(reason: reason)
             }.value
             isSessionUnlocked = true
         } catch {
@@ -91,6 +93,12 @@ final class POCController {
     /// auto-trigger path), refuses to inject unless the CGSession dictionary
     /// confirms the screen is actually locked.
     ///
+    /// No identity gate here on purpose: the successful face match in front of
+    /// this call *is* the authorization, and the password sits under the device
+    /// key (a file, not an ACL'd keychain item) so reading it can't raise a
+    /// system dialog on the unlock path — the exact failure that used to hang
+    /// the panel.
+    ///
     /// - Returns: whether the keystrokes were actually posted. The caller shows the
     ///   success animation **before** calling this (injecting is what unlocks the Mac,
     ///   which tears the panel down), so it needs to know when to walk that back.
@@ -100,26 +108,12 @@ final class POCController {
             statusMessage = "未获得辅助功能权限 —— 请在系统设置中启用 Face ID。"
             return false
         }
-        guard SecureCredentialManager.isSessionUnlocked else {
-            statusMessage = "会话已锁定 —— 请先用触控 ID 验证。"
-            return false
-        }
 
         if requireAuthoritativeLock {
             guard LockMonitor.isScreenActuallyLocked() else {
                 statusMessage = "已跳过：CGSession 报告屏幕并未真正锁定。"
                 return false
             }
-        }
-
-        // 读密码走的是钥匙串里**另一个**条目，它的 ACL 与本构建的 cdhash 未必匹配。
-        // 一旦在这里读，系统会当场弹「想要使用你储存在钥匙串的…」并要求输入登录密码
-        // —— 而它出现在扫脸成功之后，且我们持有 key window 时那个框可能收不到键盘
-        // （现场表现：密码框弹出，但打不了字）。所以宁可这次不注入，也不能把它弹出来。
-        guard !KeychainTrust.needsAuthorization else {
-            UnlockDiagnostics.log("injectStoredPassword: 钥匙串尚未对本构建授权，拒绝读取（避免扫脸后弹出无法输入的密码框）")
-            statusMessage = "需要先授权钥匙串访问 —— 请登录后从菜单栏「需要授权…」完成，选择「始终允许」。"
-            return false
         }
 
         statusMessage = "正在输入…"

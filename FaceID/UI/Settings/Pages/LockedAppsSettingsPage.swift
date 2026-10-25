@@ -84,8 +84,8 @@ struct LockedAppsSettingsPage: View {
     private var lockedState: some View {
         SettingsEmptyStateView(
             icon: "lock.fill",
-            message: "会话已锁定",
-            buttonTitle: isUnlocking ? "正在验证…" : "解锁会话",
+            message: "设置已锁定",
+            buttonTitle: isUnlocking ? "正在验证…" : "解锁设置",
             isButtonEnabled: !isUnlocking,
             caption: sessionError,
             action: unlock
@@ -301,7 +301,7 @@ struct LockedAppsSettingsPage: View {
 
     private var sessionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SettingsSectionTitle(text: "解锁会话")
+            SettingsSectionTitle(text: "解锁设置")
             SettingsGroup {
                 SettingsSteppedSliderRowContent(
                     title: "解锁后保持",
