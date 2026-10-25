@@ -9,7 +9,7 @@
 
 **给 Mac 一个「看一眼就解锁」的体验** —— 整机刷脸解锁 + 单个 App 加锁，全部在设备端完成。
 
-[下载 v1.1](https://github.com/joe0515/face-id/releases/latest) · [功能](#功能) · [安装](#安装) · [构建](#构建) · [更新日志](CHANGELOG.md)
+[下载 v1.2](https://github.com/joe0515/face-id/releases/latest) · [功能](#功能) · [安装](#安装) · [构建](#构建) · [更新日志](CHANGELOG.md)
 
 </div>
 
@@ -45,7 +45,7 @@
 
 ## 安装
 
-1. 下载 [Face ID 1.1.dmg](https://github.com/joe0515/face-id/releases/latest)，把 **Face ID** 拖进「应用程序」
+1. 下载 [Face ID 1.2.dmg](https://github.com/joe0515/face-id/releases/latest)，把 **Face ID** 拖进「应用程序」
 2. 首次打开若提示「无法验证开发者」：**右键 → 打开**（本包为 ad-hoc 签名，未做公证）
 3. 按刘海引导完成授权（摄像头、**辅助功能**）并录入人脸 —— **授权后请退出并重新打开 Face ID**，TCC 的授权结果在进程启动时固定，重启才生效
 
