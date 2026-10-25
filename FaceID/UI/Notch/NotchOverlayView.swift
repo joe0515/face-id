@@ -241,6 +241,7 @@ struct NotchOverlayView: View {
     private var scanContent: some View {
         if let appLockContent {            AppLockContentView(
                 content: appLockContent,
+                onPlaybackCompleted: { [weak controller] in controller?.noteResolveVideoFinished() },
                 // The notch's flare eats `topRadius` before any real black starts.
                 edgeInset: NotchGeometry.minimalContentEdgeInset
                     + (style == .notch ? topRadius : 0),
@@ -265,6 +266,7 @@ struct NotchOverlayView: View {
             MinimalUnlockView(
                 media: controller.media,
                 isUnlocked: isMinimalLockOpen,
+                onPlaybackCompleted: { [weak controller] in controller?.noteResolveVideoFinished() },
                 // The notch's flare eats `topRadius` before any real black starts.
                 edgeInset: NotchGeometry.minimalContentEdgeInset
                     + (style == .notch ? topRadius : 0),
@@ -279,13 +281,28 @@ struct NotchOverlayView: View {
                 pulseOpacity: scanPulseOpacity
             )
         } else {
-            ScanAnimationView(media: controller.media)
+            ScanAnimationView(
+                media: controller.media,
+                onPlaybackCompleted: { [weak controller] in controller?.noteResolveVideoFinished() }
+            )
                 .padding(.leading, scanContentPaddingLeading)
                 .padding(.trailing, scanContentPaddingTrailing)
                 .padding(.top, scanContentPaddingTop)
                 .padding(.bottom, scanContentPaddingBottom)
                 .scaleEffect(scanPulseScale)
                 .opacity(scanPulseOpacity)
+                // Live scanning feedback: a light bar sweeping down over the
+                // glyph while the phase is `.scanning`. Layered above the
+                // breathing pulse so the glyph keeps breathing underneath
+                // while the beam stays steady — scanner hardware vs. subject.
+                // Scoped to the full-scan silhouette only: the minimal and
+                // app-lock media slots are ~34 pt wide, where a beam would be
+                // noise rather than signal.
+                .overlay {
+                    if isScanning {
+                        ScanSweepIndicator()
+                    }
+                }
         }
     }
 
@@ -302,9 +319,15 @@ struct NotchOverlayView: View {
             // Content dissolves (blur + fade) as the panel shrinks, rather than being
             // abruptly clipped by the collapsing shape. Rides the animation already
             // active on `visualIsExpanded` — no separate `.animation` needed.
-            .blur(radius: visualIsExpanded ? 0 : 40)
+            //
+            // The blur is deliberately mild (14, not 40): a heavy radius smeared the
+            // success checkmark into the black background within the first third of
+            // the collapse, so the remainder of the shrink read as an "empty pill"
+            // rather than as the checkmark collapsing away. Same for the scale —
+            // 0.3 outran the panel shrink and left the content vanishing early.
+            .blur(radius: visualIsExpanded ? 0 : 14)
             .opacity(visualIsExpanded ? 1 : 0)
-            .scaleEffect(visualIsExpanded ? 1 : 0.3)
+            .scaleEffect(visualIsExpanded ? 1 : 0.5)
             .environment(\.notchPanelStyle, style)
         }
         .frame(width: currentSize.width, height: currentSize.height)

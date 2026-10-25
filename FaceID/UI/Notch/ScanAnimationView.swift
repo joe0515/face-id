@@ -29,14 +29,20 @@ enum ScanMedia: Equatable {
 
 struct ScanAnimationView: NSViewRepresentable {
     let media: ScanMedia
+    /// Fired when the current video plays to its end. Threaded through from the
+    /// controller so the success animation can collapse on the video's actual
+    /// finish rather than on a fixed clock.
+    var onPlaybackCompleted: (() -> Void)?
 
     func makeNSView(context: Context) -> ScanAnimationHostView {
         let view = ScanAnimationHostView()
+        view.onPlaybackCompleted = onPlaybackCompleted
         view.apply(media: media)
         return view
     }
 
     func updateNSView(_ nsView: ScanAnimationHostView, context: Context) {
+        nsView.onPlaybackCompleted = onPlaybackCompleted
         nsView.apply(media: media)
     }
 }
@@ -48,6 +54,14 @@ final class ScanAnimationHostView: NSView {
     private var currentMedia: ScanMedia?
     private var readyObservation: NSKeyValueObservation?
     private var fallbackRevealWorkItem: DispatchWorkItem?
+    private var endObserver: NSObjectProtocol?
+    /// `play()` is deferred until the layer is actually revealed, so we don't start
+    /// counting visible frames before the user can see them.
+    private var hasStartedPlayback = false
+
+    /// Called when the current video plays to its end — used by the controller to
+    /// time the success-animation collapse to the actual video, not a fixed clock.
+    var onPlaybackCompleted: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -83,6 +97,8 @@ final class ScanAnimationHostView: NSView {
         currentMedia = media
         readyObservation = nil
         fallbackRevealWorkItem?.cancel()
+        removeEndObserver()
+        hasStartedPlayback = false
 
         guard let resource = media.videoResourceName else {
             teardownPlayer()
@@ -117,6 +133,9 @@ final class ScanAnimationHostView: NSView {
             self.playerLayer.isHidden = false
             self.stillImageLayer.isHidden = true
             CATransaction.commit()
+            // Only now begin visible playback, from the true first frame, so a slow
+            // first-frame decode can't burn the opening beats behind the still image.
+            self.startPlaybackIfNeeded()
         }
         readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, change in
             guard change.newValue == true else { return }
@@ -132,13 +151,42 @@ final class ScanAnimationHostView: NSView {
         fallbackRevealWorkItem = fallback
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: fallback)
 
+        // Prepare at the first frame but stay paused until `reveal()` — see above.
         newPlayer.seek(to: .zero)
-        newPlayer.play()
+    }
+
+    /// Begins playback once, from the first frame, and arms the end-of-playback
+    /// callback. Called from `reveal()`, which fires on either the real
+    /// `isReadyForDisplay` or the 0.6s fallback — whichever lands first.
+    private func startPlaybackIfNeeded() {
+        guard !hasStartedPlayback else { return }
+        hasStartedPlayback = true
+        guard let player, let item = player.currentItem else { return }
+        // Restart from the true first frame so visible playback always begins at the start.
+        player.seek(to: .zero)
+        removeEndObserver()
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            self?.onPlaybackCompleted?()
+        }
+        player.play()
+    }
+
+    private func removeEndObserver() {
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
     }
 
     private func teardownPlayer() {
         readyObservation = nil
         fallbackRevealWorkItem?.cancel()
+        removeEndObserver()
+        hasStartedPlayback = false
         player?.pause()
         player = nil
         playerLayer.player = nil

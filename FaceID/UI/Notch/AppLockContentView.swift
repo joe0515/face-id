@@ -47,6 +47,9 @@ struct AppLockContent: Equatable {
 
 struct AppLockContentView: View {
     let content: AppLockContent
+    /// Fired when the success/failure video plays to its end — see
+    /// `NotchOverlayController.noteResolveVideoFinished()`.
+    var onPlaybackCompleted: (() -> Void)?
     /// Inset from the silhouette's left/right edges. The caller folds the notch's
     /// flare allowance into this where it applies.
     let edgeInset: CGFloat
@@ -66,7 +69,7 @@ struct AppLockContentView: View {
 
             Spacer(minLength: 0)
 
-            ScanAnimationView(media: content.media)
+            ScanAnimationView(media: content.media, onPlaybackCompleted: onPlaybackCompleted)
                 .padding(.vertical, mediaVerticalInset)
                 .frame(width: mediaWidth)
                 .scaleEffect(pulseScale)

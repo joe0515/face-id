@@ -11,6 +11,9 @@ struct MinimalUnlockView: View {
     let media: ScanMedia
     /// Owned by the caller (not derived from `media`) so the glyph and video can be offset from each other.
     let isUnlocked: Bool
+    /// Fired when the success/failure video plays to its end — see
+    /// `NotchOverlayController.noteResolveVideoFinished()`.
+    var onPlaybackCompleted: (() -> Void)?
     /// Inset from the silhouette's left/right edges. The caller adds the
     /// notch's flare allowance into this where it applies.
     let edgeInset: CGFloat
@@ -37,7 +40,7 @@ struct MinimalUnlockView: View {
 
             Spacer(minLength: 0)
 
-            ScanAnimationView(media: media)
+            ScanAnimationView(media: media, onPlaybackCompleted: onPlaybackCompleted)
                 .padding(.vertical, mediaVerticalInset)
                 .frame(width: mediaWidth)
                 // Scoped to the video alone — the lock icon on the left

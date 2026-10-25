@@ -99,8 +99,15 @@ final class NotchOverlayController {
     /// Guards `primeWindowIfNeeded` so the extra render pass only happens on the first show.
     private var hasPrimedWindow = false
 
-    /// Matches the success asset duration (~1.22s) plus a short beat to read the final frame.
-    private let successHoldDuration: Duration = .milliseconds(1_700)
+    /// Safety cap only — the success animation now collapses when the success video
+    /// actually plays to its end (see `noteResolveVideoFinished`), so this no longer
+    /// needs to match the asset duration. It is kept well above the worst case
+    /// (0.6s reveal fallback + ~1.22s asset + ~0.45s read beat ≈ 2.3s) so a slow
+    /// first-frame decode or a never-firing end notification still resolves cleanly
+    /// instead of hanging the panel open.
+    private let successHoldDuration: Duration = .milliseconds(2_500)
+    /// Beat to read the success animation's final frame before collapsing.
+    private static let successReadBeat: Duration = .milliseconds(450)
     /// Non-private so FaceUnlockCoordinator's auto-retry can wait this out too.
     let failureHoldDuration: Duration = .seconds(5)
     /// Reads the same setting as `FaceUnlockCoordinator.scanWindowDuration` so
@@ -464,6 +471,31 @@ final class NotchOverlayController {
             guard let self else { return }
             try? await Task.sleep(for: hold)
             guard !Task.isCancelled else { return }
+            await self.collapse()
+        }
+    }
+
+    /// Called by `ScanAnimationHostView` when the success video plays to its end.
+    ///
+    /// The success animation used to collapse on a fixed clock that started at
+    /// `finish()` — but the video only becomes *visible* once `isReadyForDisplay`
+    /// fires, which can lag well past that mark (the Mac just unlocked, the GPU is
+    /// busy decoding). When the lag exceeded the slack the panel collapsed mid-video,
+    /// so the animation read as "sometimes cut off". Now the collapse is keyed to the
+    /// video's actual end plus a short beat to read the final frame, and the fixed
+    /// `resolveTask` timer above is only a backstop.
+    ///
+    /// The `.success` guard is what keeps the failure video — whose end also fires
+    /// here — from collapsing early: failure is meant to hold its final frame for
+    /// seconds, not snap shut the instant the clip ends.
+    func noteResolveVideoFinished() {
+        guard phase == .success else { return }
+        // Restart the collapse clock from the real end of playback.
+        resolveTask?.cancel()
+        resolveTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: Self.successReadBeat)
+            guard !Task.isCancelled, self.phase == .success else { return }
             await self.collapse()
         }
     }
